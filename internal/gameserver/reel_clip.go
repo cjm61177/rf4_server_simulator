@@ -83,6 +83,27 @@ func buildRig153Like(src *proto.Value, name string, rigType int64, comps map[int
 	return buildRig153Full(name, rigType, comps, depth, clipM, sel, avail)
 }
 
+// applyRigBaitMountRender 渲染期按 153.f1 的钓组类型重算 f9 可选掩码，
+// f8 不在新可选集内时清零。存量竿的快照可能还存着联动上线前的全开 f9，
+// 回放存档的路径（rebuildRod）会原样下发，必须在这里兜住。
+// 只改本次下发的 wire 对象，不落库；未知钓组沿用实例旧值，行为不变。
+func applyRigBaitMountRender(rig *proto.Value) {
+	if rig == nil || rig.Kind != proto.KindObj || rig.FieldCount() <= 9 {
+		return
+	}
+	var rt int64
+	if f := rig.Field(1); f.Num != nil {
+		rt = int64(u32Of(f.Num))
+	}
+	sel, stored := rigBaitMountsOf(rig)
+	avail := baitMountAvailForRig(rt, stored)
+	if sel&avail != sel {
+		sel = 0
+	}
+	setRigBaitMountSel(rig, sel)
+	setRigBaitMountAvail(rig, avail)
+}
+
 // clampBaitMount 把挂饵方式收进 u32；位宽不设上限，
 // 客户端 BaitMountType 是两个独立枚举值（选中 f8 / 可选掩码 f9），
 // 枚举项数量未知，窄掩码会悄悄截掉高位选项。

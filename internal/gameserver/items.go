@@ -551,6 +551,11 @@ func (s *Server) rebuildRod(ctx context.Context, it *store.Item, obj *proto.Valu
 	// f5 钓组对象（153）——绝不能 null
 	if obj.Fields[5].Val == nil || obj.Fields[5].Val.Kind == proto.KindNull {
 		obj.Fields[5].Val = s.defaultRig153(ctx, it)
+	} else {
+		// 渲染级联动：存量竿的快照里可能还存着旧版下发的全开掩码 f9，
+		// 原样回放会让登录后的安装弹窗仍列出全部挂法（弹窗由 153 直接
+		// 驱动，14/2、4/22 走 liveRig153 已重算，这里兜住 4/5 存量回放）。
+		applyRigBaitMountRender(obj.Fields[5].Val)
 	}
 	// 出厂部件必须同时出现在 f5 的零件列表里：客户端的工作坊/装配界面
 	// 都按 f5 的 gcfcdnfmnbh 逐行渲染，缺了它们零件行就是空的。

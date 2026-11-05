@@ -9,6 +9,8 @@ package gameserver
 
 import (
 	"testing"
+
+	"rf4server/internal/proto"
 )
 
 func TestBaitMountAvailForRigTable(t *testing.T) {
@@ -101,5 +103,61 @@ func TestRigSetTypeRebuildsBaitMountFields(t *testing.T) {
 	}
 	if v, ok := s.savedBaitMount(ctx, rod.GUID); !ok || v != 64 {
 		t.Fatalf("沉+Pop-up 属于基础集，换钓组不应失效，实得 %d/%v", v, ok)
+	}
+}
+
+// TestItemToTreeSanitizesLegacyBaitMountFields 锁定渲染级联动：
+// 存量竿的快照还存着联动上线前的全开掩码 f9 + 失效 f8 时，登录背包树
+//（4/5，ItemToTree→rebuildRod）必须按当前钓组类型重算后下发，且不落库。
+func TestItemToTreeSanitizesLegacyBaitMountFields(t *testing.T) {
+	s, db := newRigTestServer(t)
+	ctx := t.Context()
+	rod, err := s.CreateItem(ctx, 1000001, "feeder_10126_FD390", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.rigSetType(ctx, 1000001, rod.GUID, 12) {
+		t.Fatal("rigSetType 失败")
+	}
+	// 模拟旧版落库快照：全开掩码 + pop-up 残留选择。
+	row, err := db.GetItemByGUID(ctx, rod.GUID)
+	if err != nil || row == nil {
+		t.Fatal(err)
+	}
+	fields, err := FieldsFromJSON(row.FieldsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := fieldIdxByCS(row.WireClass, csRigObject)
+	if idx < 0 || idx >= len(fields) {
+		t.Fatal("竿实例缺钓组字段")
+	}
+	setRigBaitMountSel(fields[idx].Val, 16384)
+	setRigBaitMountAvail(fields[idx].Val, defaultBaitMountAvail)
+	s.saveItemFields(ctx, row, fields)
+
+	fresh, err := db.GetItemByGUID(ctx, rod.GUID)
+	if err != nil || fresh == nil {
+		t.Fatal(err)
+	}
+	tree, err := s.ItemToTree(ctx, fresh)
+	if err != nil || tree == nil || tree.Kind != proto.KindObj {
+		t.Fatal("ItemToTree 失败: ", err)
+	}
+	rig := tree.Fields[5].Val
+	if sel, avail := rigBaitMountsOf(rig); sel != 0 || avail != 126 {
+		t.Fatalf("渲染树 f8/f9 = %d/%d，期望 0/126（全开掩码不得外泄）", sel, avail)
+	}
+	// 渲染只改 wire：库里的快照保持原样。
+	after, err := db.GetItemByGUID(ctx, rod.GUID)
+	if err != nil || after == nil {
+		t.Fatal(err)
+	}
+	afterFields, err := FieldsFromJSON(after.FieldsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel, avail := rigBaitMountsOf(afterFields[idx].Val); sel != 16384 || avail != defaultBaitMountAvail {
+		t.Fatalf("渲染不应落库，库内 f8/f9 = %d/%d，期望 16384/%d", sel, avail, defaultBaitMountAvail)
 	}
 }
