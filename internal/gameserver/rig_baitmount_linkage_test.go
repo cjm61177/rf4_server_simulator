@@ -20,17 +20,34 @@ func TestBaitMountAvailForRigTable(t *testing.T) {
 			t.Fatalf("钓组 %d 可选集 = %d，期望锚点 %d", rt, got, base)
 		}
 	}
-	popup := base | baitMountPopupFamily
-	for _, rt := range []int64{24, 25, 26, 27, 28, 30, 31, 32} {
+	// 编排表（用户按官方游戏知识给定，2026-11-05）：
+	hair := base | 128 | 256 | 512 | 1024 | 2048
+	if got := baitMountAvailForRig(24, 0); got != hair {
+		t.Fatalf("发丝钓组可选集 = %d，期望 %d", got, hair)
+	}
+	snowman := int64(64 | 128 | 256 | 512 | 4096 | 8192 | 16384 | 32768)
+	if got := baitMountAvailForRig(25, 0); got != snowman {
+		t.Fatalf("雪人钓组可选集 = %d，期望 %d", got, snowman)
+	}
+	popup := int64(baitMountPopupFamily)
+	for _, rt := range []int64{26, 27, 28, 32} {
 		if got := baitMountAvailForRig(rt, 0); got != popup {
-			t.Fatalf("钓组 %d 可选集 = %d，期望 %d", rt, got, popup)
+			t.Fatalf("钓组 %d 可选集 = %d，期望 pop-up 族 %d", rt, got, popup)
 		}
 	}
-	if got := baitMountAvailForRig(29, 0); got != base|baitMountMaggotFamily {
-		t.Fatalf("底蛆钓组可选集 = %d，期望 %d", got, base|baitMountMaggotFamily)
+	maggot := int64(1024 | 2048) | baitMountMaggotFamily
+	if got := baitMountAvailForRig(29, 0); got != maggot {
+		t.Fatalf("底蛆钓组可选集 = %d，期望 %d", got, maggot)
 	}
-	if got := baitMountAvailForRig(34, 0); got != popup|baitMountFoamFamily {
-		t.Fatalf("Zig 钓组可选集 = %d，期望 %d", got, popup|baitMountFoamFamily)
+	zig := int64(16384|32768) | baitMountFoamFamily
+	if got := baitMountAvailForRig(34, 0); got != zig {
+		t.Fatalf("Zig 钓组可选集 = %d，期望 %d", got, zig)
+	}
+	// 30/31 暂未编排，维持过渡值。
+	for _, rt := range []int64{30, 31} {
+		if got := baitMountAvailForRig(rt, 0); got != base|baitMountPopupFamily {
+			t.Fatalf("钓组 %d 可选集 = %d，期望 %d", rt, got, base|baitMountPopupFamily)
+		}
 	}
 	// 未知/非沉底钓组维持旧行为：沿用实例旧值，缺失退回全开。
 	if got := baitMountAvailForRig(1, 0); got != defaultBaitMountAvail {
@@ -48,10 +65,10 @@ func TestBuildRig153LikeClampsToRigMask(t *testing.T) {
 	if sel, avail := rigBaitMountsOf(rebuilt); sel != 0 || avail != 126 {
 		t.Fatalf("切到普通沉底后 f8/f9 = %d/%d，期望 0/126", sel, avail)
 	}
-	// 同族切换：选择仍在可选集内则保留。
+	// 同族切换：选择仍在可选集内则保留（Chod = 纯 pop-up 族）。
 	kept := buildRig153Like(tpl, "rig_BottomChod", 28, nil, 100, 0)
-	if sel, avail := rigBaitMountsOf(kept); sel != 16384 || avail != 126|baitMountPopupFamily {
-		t.Fatalf("切到 Chod 后应保留选择 f8/f9 = %d/%d，期望 16384/%d", sel, avail, 126|baitMountPopupFamily)
+	if sel, avail := rigBaitMountsOf(kept); sel != 16384 || avail != baitMountPopupFamily {
+		t.Fatalf("切到 Chod 后应保留选择 f8/f9 = %d/%d，期望 16384/%d", sel, avail, baitMountPopupFamily)
 	}
 }
 
@@ -94,15 +111,15 @@ func TestRigSetTypeRebuildsBaitMountFields(t *testing.T) {
 	if got := s.baitMountFor(ctx, rod.GUID); got != 0 {
 		t.Fatalf("渲染 f8 应为 0，实得 %d", got)
 	}
-	// 换回支持 pop-up 的钓组（26）：基础位仍可选。
-	if err := db.UpsertRodSetting(ctx, rod.GUID, baitMountSettingKey, "64"); err != nil {
+	// 换回 pop-up 钓组（26）：族内选择仍有效。
+	if err := db.UpsertRodSetting(ctx, rod.GUID, baitMountSettingKey, "16384"); err != nil {
 		t.Fatal(err)
 	}
 	if !s.rigSetType(ctx, 1000001, rod.GUID, 26) {
 		t.Fatal("rigSetType 失败")
 	}
-	if v, ok := s.savedBaitMount(ctx, rod.GUID); !ok || v != 64 {
-		t.Fatalf("沉+Pop-up 属于基础集，换钓组不应失效，实得 %d/%v", v, ok)
+	if v, ok := s.savedBaitMount(ctx, rod.GUID); !ok || v != 16384 {
+		t.Fatalf("传统 Pop-up 属于 pop-up 族，换钓组不应失效，实得 %d/%v", v, ok)
 	}
 }
 

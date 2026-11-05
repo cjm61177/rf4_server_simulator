@@ -11,16 +11,16 @@ import (
 // 两者都为 0 时安装弹窗空白且鱼饵全部不适配；只写 f9 时弹窗能开，
 // 但安装栏一直显示「没选择」——所以两个字段都必须带上。
 func TestBuildRig153CarriesBaitMount(t *testing.T) {
-	rig := buildRig153Full("rig_BottomPopup", 26, nil, 100, 0, 64, 126)
-	if sel, avail := rigBaitMountsOf(rig); sel != 64 || avail != 126 {
-		t.Fatalf("f8/f9 = %d/%d，期望 64/126", sel, avail)
+	rig := buildRig153Full("rig_BottomPopup", 26, nil, 100, 0, 16384, baitMountPopupFamily)
+	if sel, avail := rigBaitMountsOf(rig); sel != 16384 || avail != baitMountPopupFamily {
+		t.Fatalf("f8/f9 = %d/%d，期望 16384/%d", sel, avail, baitMountPopupFamily)
 	}
 	if sel, avail := rigBaitMountsOf(buildRig153WithClip("rig_BottomPopup", 26, nil, 100, 0)); sel != 0 || avail != baitMountAvailForRig(26, 0) {
 		t.Fatalf("不显式传入时 f8/f9 应为 0/%d，实得 %d/%d", baitMountAvailForRig(26, 0), sel, avail)
 	}
 	rebuilt := buildRig153Like(rig, "rig_BottomPopup", 26, rigCompsOf(rig), 100, 0)
-	if sel, avail := rigBaitMountsOf(rebuilt); sel != 64 || avail != baitMountAvailForRig(26, 0) {
-		t.Fatalf("模板重建后 f8/f9 = %d/%d，期望 64/%d", sel, avail, baitMountAvailForRig(26, 0))
+	if sel, avail := rigBaitMountsOf(rebuilt); sel != 16384 || avail != baitMountAvailForRig(26, 0) {
+		t.Fatalf("模板重建后 f8/f9 = %d/%d，期望 16384/%d", sel, avail, baitMountAvailForRig(26, 0))
 	}
 	// 模板缺失时按钓组类型补可选项，弹窗不能再变空白。
 	if _, avail := rigBaitMountsOf(buildRig153Like(nil, "rig_BottomPopup", 26, nil, 100, 0)); avail != baitMountAvailForRig(26, 0) {

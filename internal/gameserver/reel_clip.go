@@ -164,34 +164,45 @@ const baitMountSettingKey = "baitmount"
 // 旧注释「客户端自己按竿型+已挂鱼饵筛掉不适用的项」是误判，联动是服务端职责。
 var defaultBaitMountAvail int64 = 0xffffffff
 
-// 可选挂饵方式集合，按证据分级：
-//   - baitMountSetBottom：官方抓包 f9=126 锚点（沉+煮/颗粒/沉+沉/颗+颗/
-//     颗+沉/沉+Pop-up 六种基础沉底挂法）；
-//   - pop-up 族（玉米浮/浮水球）：27/28（铰链硬钩/Chod）由客户端预览图
-//     专属 _chod 变体（kahmnmfmpgk.dakbddchlkp）证明可选；24/25/26/30/31/32
-//     是发丝/浮球钓组，按语义归入同族（无逐钓组抓包，属假设）；
-//   - 蛆组合族：29（底蛆钓组）按名归入（假设）；
-//   - 泡沫族：34（固定 Zig）按语义归入（假设）。
-//     假设组即使划错，也只是弹窗列表宽窄问题，不会崩客户端。
+// 可选挂饵方式集合：
+//   - baitMountSetBottom：官方抓包 f9=126 锚点（下沉香煮成饵/颗粒/沉+沉/
+//     颗+颗/颗+沉/沉+Pop-up 六种基础沉底挂法）；
+//   - baitMountPopupFamily：pop-up/人造玉米族六位（27/28 由客户端专属
+//     _chod 预览图实证）；
+//   - baitMountMaggotFamily：玉米浮+蛆5/10/15；
+//   - baitMountFoamFamily：ZIG 泡沫族。
+//   - 128/256/512/1024/2048 等组合位按编排表直接写数值。
 const (
 	baitMountSetBottom    = 126                                       // 2|4|8|16|32|64
-	baitMountPopupFamily  = 1024 | 2048 | 4096 | 8192 | 16384 | 32768 // 玉米浮/浮水球族
+	baitMountPopupFamily  = 1024 | 2048 | 4096 | 8192 | 16384 | 32768 // Pop-up/人造玉米族
 	baitMountMaggotFamily = 65536 | 131072 | 262144                   // 玉米浮+蛆5/10/15
 	baitMountFoamFamily   = 524288 | 1048576 | 2097152                // 泡沫族（Zig 专用）
 )
 
 // rigBaitMountAvail 钓组类型 → 可选挂饵方式掩码（153.f9）。
-// 未列出的钓组类型（浮钓/路亚/海钓）不做限制，维持旧行为。
+// 编排表由用户按官方游戏知识逐钓组给定（2026-11-05），锚点 = 官方抓包
+// f9=126 与 27/28 的 _chod 预览图。30/31（浮钓 carp 发丝/浮钓 carp
+// Pop-up）暂未编排，维持 126+pop-up 族；未列出的钓组类型
+// （浮钓/路亚/海钓）不做限制，维持旧行为。
 var rigBaitMountAvail = map[int64]int64{
+	// 基础沉底族：普通沉底/帕特诺斯特/内联/环圈/方法/活鱼/火箭/标记。
 	12: baitMountSetBottom, 13: baitMountSetBottom, 14: baitMountSetBottom,
 	15: baitMountSetBottom, 16: baitMountSetBottom, 17: baitMountSetBottom,
 	18: baitMountSetBottom, 23: baitMountSetBottom,
-	24: baitMountSetBottom | baitMountPopupFamily, 25: baitMountSetBottom | baitMountPopupFamily,
-	26: baitMountSetBottom | baitMountPopupFamily, 27: baitMountSetBottom | baitMountPopupFamily,
-	28: baitMountSetBottom | baitMountPopupFamily, 32: baitMountSetBottom | baitMountPopupFamily,
-	30: baitMountSetBottom | baitMountPopupFamily, 31: baitMountSetBottom | baitMountPopupFamily,
-	29: baitMountSetBottom | baitMountMaggotFamily,
-	34: baitMountSetBottom | baitMountPopupFamily | baitMountFoamFamily,
+	// 发丝钓组：兼容基础底钓饵、颗粒及单/双饵组合（含玉米浮）。
+	24: baitMountSetBottom | 128 | 256 | 512 | 1024 | 2048,
+	// 雪人钓组：核心为沉底饵+Pop-up / 浮水组合。
+	25: 64 | 128 | 256 | 512 | 4096 | 8192 | 16384 | 32768,
+	// Pop-up/铰链/Chod/方法饵 Pop-up：纯浮水体系，pop-up/玉米族六位。
+	26: baitMountPopupFamily, 27: baitMountPopupFamily, 28: baitMountPopupFamily,
+	32: baitMountPopupFamily,
+	// 底蛆钓组：玉米浮及玉米浮+蛆混合体系。
+	29: 1024 | 2048 | baitMountMaggotFamily,
+	// 固定 Zig：ZIG 泡沫体系及浮水组合。
+	34: 16384 | 32768 | baitMountFoamFamily,
+	// 暂未编排，维持过渡值。
+	30: baitMountSetBottom | baitMountPopupFamily,
+	31: baitMountSetBottom | baitMountPopupFamily,
 }
 
 // baitMountAvailForRig 返回该钓组类型应下发的 f9。
