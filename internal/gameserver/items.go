@@ -195,16 +195,33 @@ func qtyMirrorIdx(class string) int {
 	return -1
 }
 
-// writeItemQty 把可堆叠数量写进权威数量槽，并镜像到家族 UI 计数槽。
-func writeItemQty(class string, fields []proto.Field, qty uint64) {
+// itemQtyValue 读取实例数量槽；没有数量字段时返回 false。
+func itemQtyValue(class string, fields []proto.Field) (uint64, bool) {
+	idx := itemQtyFieldIdx(class)
+	if idx < 0 || idx >= len(fields) || fields[idx].Num == nil {
+		return 0, false
+	}
+	return u64Of(fields[idx].Num), true
+}
+
+// setItemQty 写入实例数量槽；metaQtyFamily 家族的 UI 计数镜像槽
+// （qtyMirrorIdx：abmokghdbhf=f0 miecmmbpolk——lillemolakn.medpgjlibog 读，
+// bpmmimcmpof/deckldefiap/dpghngjmnap/pcngolccead=f ljnnpokapig）两处一起写。
+func setItemQty(class string, fields []proto.Field, qty uint64) bool {
 	idx := itemQtyFieldIdx(class)
 	if idx < 0 || idx >= len(fields) {
-		return
+		return false
 	}
 	fields[idx].Num = ptrU64(qty)
 	if m := qtyMirrorIdx(class); m >= 0 && m < len(fields) {
 		fields[m].Num = ptrU64(qty)
 	}
+	return true
+}
+
+// writeItemQty 写入新构造实例的数量字段。
+func writeItemQty(class string, obj *proto.Value, qty uint64) {
+	_ = setItemQty(class, obj.Fields, qty)
 }
 
 // fieldIsFloat 该位置的 op 是否浮点。
@@ -428,29 +445,28 @@ func (s *Server) canonicalizeItemPhysicalFields(ctx context.Context, it *store.I
 	if err != nil || def == nil {
 		return changed
 	}
-	// 渔轮顶部 f0 表示当前齿轮传动比。必须先读已安装齿轮，只有找不到
-	// 零件时才回退到母轮出厂定义；否则每次上线都会重置收线速度。
-	reelGearApplied := false
+	// 渔轮顶部 f0 是客户端的受力/力度上限，不是传动比。优先使用当前
+	// 安装的摩擦片制动力，缺失时才回退到出厂摩擦片；传动比只在齿轮
+	// 子件自己的强度字段里出现，不能污染母轮上限。
 	if class == "dgjinoebdop" {
-		if _, gearDef, _, ok := s.selectedReelPart(ctx, fields, 52); ok {
-			if ratio := itemDefF32(gearDef, gearAttrRatio); ratio > 0 {
-				idx := fieldIdxByCS(class, csStrength)
-				if setWireFloat(fields, class, idx, ratio*it.Workmanship) {
-					changed = true
-				}
-				reelGearApplied = true
+		strength := s.reelBaseDragFromRow(ctx, it)
+		if strength > 0 {
+			idx := fieldIdxByCS(class, csStrength)
+			if setWireFloat(fields, class, idx, strength) {
+				changed = true
 			}
-		}
-	}
-	if !reelGearApplied {
-		if strength, ok := strengthBitsFor(def, it.Durability); ok {
+		} else if strength, ok := strengthBitsFor(def, it.Durability); ok {
 			idx := fieldIdxByCS(class, csStrength)
 			if setWireFloat(fields, class, idx, strength) {
 				changed = true
 			}
 		}
+	} else if strength, ok := strengthBitsFor(def, it.Durability); ok {
+		idx := fieldIdxByCS(class, csStrength)
+		if setWireFloat(fields, class, idx, strength) {
+			changed = true
+		}
 	}
-
 	// 渔轮刹车片子是嵌套实例，客户端使用它自己的 f0。其值必须来自当前
 	// 安装摩擦片的定义，而不是母轮出厂摩擦片，否则重登后摩擦力会归位。
 	if class == "dgjinoebdop" {
@@ -1100,7 +1116,7 @@ func (s *Server) reclassifyStoredItem(ctx context.Context, it *store.Item, def *
 	setNum(csNumericID, uint64(def.NumericID))
 	rowQty := it.Qty
 	if countableCategories[def.Category] {
-		writeItemQty(cls.Class, obj.Fields, uint64(rowQty))
+		writeItemQty(cls.Class, obj, uint64(rowQty))
 	}
 	workmanship := it.Workmanship
 	durability := it.Durability
@@ -1177,7 +1193,7 @@ func (s *Server) CreateItem(ctx context.Context, uid int64, itemID, container st
 				defQty = 1
 			}
 			fieldQty := defQty * uint64(units)
-			writeItemQty(cls.Class, obj.Fields, fieldQty)
+			writeItemQty(cls.Class, obj, fieldQty)
 			rowQty = int64(fieldQty)
 		}
 	}
@@ -1242,8 +1258,7 @@ func (s *Server) prepareNewItemWithCount(ctx context.Context, uid int64, itemID,
 	if err != nil {
 		return nil, err
 	}
-	if idx := fieldIdxByCS(it.WireClass, csQty); idx >= 0 && idx < len(fields) {
-		fields[idx].Num = ptrU64(uint64(count))
+	if setItemQty(it.WireClass, fields, uint64(count)) {
 		fj, ferr := FieldsToJSON(fields)
 		if ferr != nil {
 			return nil, ferr
@@ -1264,12 +1279,9 @@ func (s *Server) AddToStack(ctx context.Context, uid int64, itemID, container st
 		it, err := s.CreateItem(ctx, uid, itemID, container, units)
 		return it, false, err
 	}
-	clsEntry, ok := resolveWireClass(def)
-	if !ok {
-		clsEntry = wireClassEntry{fallbackWireClass, fallbackTypeID}
-	}
-	cls := clsEntry.Class
-	qtyIdx := itemQtyFieldIdx(cls)
+	// 合并写入走 row.WireClass 驱动的 setItemQty（家族镜像在函数内处理），
+	// 无需在此预先解析实例类。
+
 	defQty := int64(1)
 	if v, ok := defAttrU64(def, csQty); ok && v > 0 {
 		defQty = int64(v)
@@ -1283,13 +1295,12 @@ func (s *Server) AddToStack(ctx context.Context, uid int64, itemID, container st
 			continue
 		}
 		fields, _ := FieldsFromJSON(row.FieldsJSON)
-		if qtyIdx >= 0 && qtyIdx < len(fields) {
+		if cur, ok := itemQtyValue(row.WireClass, fields); ok {
 			// 若 row.qty 与字段值不一致，以字段值为基准修正后再累加。
-			cur := int64(u64Of(fields[qtyIdx].Num))
 			if cur > 0 {
-				row.Qty = cur
+				row.Qty = int64(cur)
 			}
-			writeItemQty(cls, fields, uint64(cur+addQty))
+			setItemQty(row.WireClass, fields, cur+uint64(addQty))
 		}
 		fj, _ := FieldsToJSON(fields)
 		newQty := row.Qty + addQty

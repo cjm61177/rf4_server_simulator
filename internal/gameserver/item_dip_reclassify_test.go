@@ -680,3 +680,58 @@ func TestReclassifyPVAFromDipClass(t *testing.T) {
 		t.Errorf("cat 58 提取物不应迁移（721 即正确类）")
 	}
 }
+
+func assertDipQtyFields(t *testing.T, it *store.Item, want int64) {
+	t.Helper()
+	if it == nil {
+		t.Fatal("物品为空")
+	}
+	fields, err := FieldsFromJSON(it.FieldsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 数量/镜像槽按 wire 类取：metaQtyFamily 的镜像不都是 miecmmbpolk——
+	// bpmmimcmpof/deckldefiap/dpghngjmnap/pcngolccead 的镜像是 ljnnpokapig
+	// （见 items.go qtyMirrorIdx）。
+	qa, qm := itemQtyFieldIdx(it.WireClass), qtyMirrorIdx(it.WireClass)
+	if qa < 0 || qa >= len(fields) || qm < 0 || qm >= len(fields) {
+		t.Fatalf("数量/镜像槽越界：qtyIdx=%d mirrorIdx=%d len=%d class=%s",
+			qa, qm, len(fields), it.WireClass)
+	}
+	auth, mirror := u64Of(fields[qa].Num), u64Of(fields[qm].Num)
+	if it.Qty != want || auth != uint64(want) || mirror != uint64(want) {
+		t.Fatalf("qty=%d 权威=%d 镜像=%d, want %d", it.Qty, auth, mirror, want)
+	}
+}
+
+func TestDipFactoryAndStackKeepQuantityFields(t *testing.T) {
+	srv, db := newRigTestServer(t)
+	ctx := context.Background()
+	it, err := srv.CreateItem(ctx, 1000004, "dip_hvz_se", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDipQtyFields(t, it, 100)
+
+	stacked, merged, err := srv.AddToStack(ctx, 1000004, "dip_hvz_se", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !merged || stacked.GUID != it.GUID {
+		t.Fatalf("应并入原堆，merged=%v got=%s want=%s", merged, stacked.GUID, it.GUID)
+	}
+	fresh, err := db.GetItemByGUID(ctx, it.GUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDipQtyFields(t, fresh, 200)
+}
+
+func TestDipExactCountKeepsQuantityFields(t *testing.T) {
+	srv, _ := newRigTestServer(t)
+	it, err := srv.prepareNewItemWithCount(context.Background(), 1000004, "dip_hvz_se", "backpack", 7, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDipQtyFields(t, it, 7)
+}

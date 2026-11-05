@@ -159,10 +159,8 @@ func stackCountTx(ctx context.Context, tx *sql.Tx, it *store.Item) int64 {
 	}
 	fields, err := FieldsFromJSON(it.FieldsJSON)
 	if err == nil {
-		if q := itemQtyFieldIdx(it.WireClass); q >= 0 && q < len(fields) && fields[q].Num != nil {
-			if n := int64(u64Of(fields[q].Num)); n > 0 {
-				return n
-			}
+		if n, ok := itemQtyValue(it.WireClass, fields); ok && n > 0 {
+			return int64(n)
 		}
 	}
 	if def, derr := itemDefByNumericIDTx(ctx, tx, it.NumericID); derr == nil && def != nil {
@@ -239,7 +237,7 @@ func (s *Server) prepareNewItem(ctx context.Context, uid int64, itemID, containe
 				units = 1
 			}
 			fieldQty := defQty * uint64(units)
-			writeItemQty(cls.Class, obj.Fields, fieldQty)
+			writeItemQty(cls.Class, obj, fieldQty)
 			rowQty = int64(fieldQty)
 		}
 	}
@@ -301,9 +299,7 @@ func grantPreparedItemTx(ctx context.Context, tx *sql.Tx, prepared *store.Item, 
 			if add < 1 {
 				add = 1
 			}
-			// 写权威数量槽并镜像家族 UI 计数槽（此前只写 csQty，对
-			// metaQtyFamily 两类会漏写/错写，见 items.go itemQtyFieldIdx）。
-			writeItemQty(row.WireClass, fields, uint64(cur+add))
+			setItemQty(row.WireClass, fields, uint64(cur+add))
 			bumpCreatedTicks(fields, row.WireClass)
 			fj, ferr := FieldsToJSON(fields)
 			if ferr != nil {
@@ -365,9 +361,7 @@ func consumeItemQtyTx(ctx context.Context, tx *sql.Tx, row *store.Item, n int64)
 			return 0, err
 		}
 	} else {
-		if q := fieldIdxByCS(row.WireClass, csQty); q >= 0 && q < len(fields) {
-			fields[q].Num = ptrU64(uint64(left))
-		}
+		setItemQty(row.WireClass, fields, uint64(left))
 		bumpCreatedTicks(fields, row.WireClass)
 		fj, ferr := FieldsToJSON(fields)
 		if ferr != nil {
