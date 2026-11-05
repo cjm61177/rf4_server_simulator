@@ -323,6 +323,19 @@ func TestReelStrengthUsesGearRatioNotDrag(t *testing.T) {
 	}
 }
 
+func TestLeaderStrengthBitsUseNestedWireLoad(t *testing.T) {
+	def := &store.ItemDef{
+		Category: gearCatLeader,
+		AttrsJSON: attrsJSON(t, map[string]any{
+			gearAttrLeaderIn: map[string]any{gearAttrMaxLoad: f32Attr(36)},
+		}),
+	}
+	got, ok := strengthBitsFor(def, 0.5)
+	if !ok || math.Abs(got-18) > 0.01 {
+		t.Fatalf("前导强度=%v ok=%v，期望嵌套线材强度 36kg × 耐久 0.5 = 18", got, ok)
+	}
+}
+
 func TestDBRollHonorsDynamicGearCap(t *testing.T) {
 	db := connectTestDB(t)
 	if _, err := db.SQL.Exec(`INSERT INTO loc_alias(alias,loc) VALUES('level_001_lake','station_test')`); err != nil {
