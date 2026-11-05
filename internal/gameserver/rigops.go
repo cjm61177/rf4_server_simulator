@@ -1659,6 +1659,9 @@ func (s *Server) rigSetType(ctx context.Context, uid int64, rodGUID string, rigT
 	if row, err := s.DB.GetItemByGUID(ctx, rodGUID); err == nil && row != nil {
 		// 玩家显式选择优先。已装组件与新类型不完全匹配时也不拒绝，
 		// 后续矫正不能用组件推断覆盖该选择。
+		// 钓组 ↔ 挂饵方式联动：mutate 里 buildRig153Like 已按新类型重算
+		// f9 并把失效的 f8 清零；存档里的旧选择由 savedBaitMount 按同一
+		// 可选集判为未设置，挂饵份数自动回退一份，无需在此删记录。
 		s.rigItemMutate(ctx, rodGUID, nil, nil, &rigType)
 		_ = s.DB.UpsertRodSetting(ctx, rodGUID, "rig_type_explicit", "1")
 	}
@@ -2049,7 +2052,7 @@ func (s *Server) rigItem157Fallback(ctx context.Context, uid int64, rigGUID stri
 		clipM = saved
 	}
 	f5 := buildRig153Full(name, rigType, comps, defaultDepthFor(name, rigType), clipM,
-		s.baitMountFor(ctx, rigGUID), defaultBaitMountAvail)
+		s.baitMountFor(ctx, rigGUID), baitMountAvailForRig(rigType, 0))
 	vals := map[int]*proto.Value{
 		3:  proto.Guid(lineGUID),
 		5:  f5,

@@ -116,11 +116,11 @@ func (s *Server) RepairItemPhysics(ctx context.Context) error {
 					fields[idx] = rodCreated
 				}
 			}
-			// 挂饵方式可选项缺失时补默认掩码：f9=0 会让「选择安装方式」
+			// 挂饵方式可选项缺失时按钓组类型补掩码：f9=0 会让「选择安装方式」
 			// 弹窗全空、鱼饵被判定为不适配（2026-11-04 实测）。
 			if idx := fieldIdxByCS(it.WireClass, csRigObject); idx >= 0 && idx < len(fields) && fields[idx].Val != nil {
 				if _, avail := rigBaitMountsOf(fields[idx].Val); avail == 0 {
-					setRigBaitMountAvail(fields[idx].Val, defaultBaitMountAvail)
+					setRigBaitMountAvail(fields[idx].Val, baitMountAvailForRig(s.rigTypeOfItem(ctx, it), 0))
 				}
 			}
 		}

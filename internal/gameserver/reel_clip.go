@@ -36,9 +36,10 @@ func rigClipOf(v *proto.Value) int64 {
 	return clampReelClipM(int64(u32Of(f.Num)))
 }
 
-// buildRig153WithClip 构造 153 钓组对象（不带挂饵方式，f8/f9 全 0）。
+// buildRig153WithClip 构造 153 钓组对象（不带选中挂饵方式，f8=0）。
+// f9 按钓组类型给可选集，否则新建竿的安装弹窗是全空。
 func buildRig153WithClip(name string, rigType int64, comps map[int64]rigComp, depth, clipM int64) *proto.Value {
-	return buildRig153Full(name, rigType, comps, depth, clipM, 0, 0)
+	return buildRig153Full(name, rigType, comps, depth, clipM, 0, baitMountAvailForRig(rigType, 0))
 }
 
 // buildRig153Full 构造 153 钓组对象，写入挂饵方式的两个字段。
@@ -69,12 +70,15 @@ func buildRig153Full(name string, rigType int64, comps map[int64]rigComp, depth,
 	})
 }
 
-// buildRig153Like 以已有的 153 对象为模板重建，保留挂饵方式的选中值与可选项。
-// 模板缺失或可选项为 0 时补默认可选项，避免弹窗又变回空白。
+// buildRig153Like 以已有的 153 对象为模板重建。f9（可选项）按当前钓组类型
+// 重算——反编译证明客户端对「钓组 ↔ 挂饵方式」零过滤（bbhjnacijjf 打开及
+// 每次 153 推送都用 f1/f9/f8 三字段重建列表），联动只能由服务端在这里给出。
+// f8 不在新可选集内时清零，客户端安装栏自动回到「没选择」。
 func buildRig153Like(src *proto.Value, name string, rigType int64, comps map[int64]rigComp, depth, clipM int64) *proto.Value {
 	sel, avail := rigBaitMountsOf(src)
-	if avail == 0 {
-		avail = defaultBaitMountAvail
+	avail = baitMountAvailForRig(rigType, avail)
+	if sel&avail != sel {
+		sel = 0
 	}
 	return buildRig153Full(name, rigType, comps, depth, clipM, sel, avail)
 }
@@ -130,11 +134,57 @@ func setRigBaitMountAvail(v *proto.Value, avail int64) {
 
 const baitMountSettingKey = "baitmount"
 
-// defaultBaitMountAvail 是「可选安装方式」的默认掩码。
-// 全 1：客户端自己按竿型 + 已挂鱼饵筛掉不适用的项，服务端不再猜位宽。
-// 2026-11-04 实测 126 只覆盖低位（下沉煮饵/颗粒族），0x1F80 只覆盖人造玉米族，
-// 都会让弹窗缺项；全 1 时弹窗给出该钓组完整的一组，玩家选中后按 f8 记忆。
+// defaultBaitMountAvail 是未知/非沉底钓组的可选掩码（沿用旧行为，不限制）。
+//
+// 2026-11-05 反编译修正：客户端对「钓组类型 ↔ 挂饵方式」不做任何过滤——
+// 安装方式弹窗（bbhjnacijjf）打开及每次收到 153 推送时都用
+// bkcpbemimgl(153.f1 钓组类型, 153.f9 可选掩码, 153.f8 选中值) 重建模型，
+// gdgnidafbmp 按 f9 的每个位各生成一行，钓组类型只用于预览图命名。
+// 旧注释「客户端自己按竿型+已挂鱼饵筛掉不适用的项」是误判，联动是服务端职责。
 var defaultBaitMountAvail int64 = 0xffffffff
+
+// 可选挂饵方式集合，按证据分级：
+//   - baitMountSetBottom：官方抓包 f9=126 锚点（沉+煮/颗粒/沉+沉/颗+颗/
+//     颗+沉/沉+Pop-up 六种基础沉底挂法）；
+//   - pop-up 族（玉米浮/浮水球）：27/28（铰链硬钩/Chod）由客户端预览图
+//     专属 _chod 变体（kahmnmfmpgk.dakbddchlkp）证明可选；24/25/26/30/31/32
+//     是发丝/浮球钓组，按语义归入同族（无逐钓组抓包，属假设）；
+//   - 蛆组合族：29（底蛆钓组）按名归入（假设）；
+//   - 泡沫族：34（固定 Zig）按语义归入（假设）。
+//     假设组即使划错，也只是弹窗列表宽窄问题，不会崩客户端。
+const (
+	baitMountSetBottom    = 126                                       // 2|4|8|16|32|64
+	baitMountPopupFamily  = 1024 | 2048 | 4096 | 8192 | 16384 | 32768 // 玉米浮/浮水球族
+	baitMountMaggotFamily = 65536 | 131072 | 262144                   // 玉米浮+蛆5/10/15
+	baitMountFoamFamily   = 524288 | 1048576 | 2097152                // 泡沫族（Zig 专用）
+)
+
+// rigBaitMountAvail 钓组类型 → 可选挂饵方式掩码（153.f9）。
+// 未列出的钓组类型（浮钓/路亚/海钓）不做限制，维持旧行为。
+var rigBaitMountAvail = map[int64]int64{
+	12: baitMountSetBottom, 13: baitMountSetBottom, 14: baitMountSetBottom,
+	15: baitMountSetBottom, 16: baitMountSetBottom, 17: baitMountSetBottom,
+	18: baitMountSetBottom, 23: baitMountSetBottom,
+	24: baitMountSetBottom | baitMountPopupFamily, 25: baitMountSetBottom | baitMountPopupFamily,
+	26: baitMountSetBottom | baitMountPopupFamily, 27: baitMountSetBottom | baitMountPopupFamily,
+	28: baitMountSetBottom | baitMountPopupFamily, 32: baitMountSetBottom | baitMountPopupFamily,
+	30: baitMountSetBottom | baitMountPopupFamily, 31: baitMountSetBottom | baitMountPopupFamily,
+	29: baitMountSetBottom | baitMountMaggotFamily,
+	34: baitMountSetBottom | baitMountPopupFamily | baitMountFoamFamily,
+}
+
+// baitMountAvailForRig 返回该钓组类型应下发的 f9。
+// 已知钓组一律按表重算（客户端只照 f9 渲染，服务端是唯一权威，
+// 旧全开掩码不能外泄）；未知钓组沿用实例旧值，缺失时退回全开。
+func baitMountAvailForRig(rigType, stored int64) int64 {
+	if m, ok := rigBaitMountAvail[rigType]; ok {
+		return m
+	}
+	if stored != 0 {
+		return stored
+	}
+	return defaultBaitMountAvail
+}
 
 // baitMountFor 返回渲染钓组时应写入 f8 的选中值：玩家选过的优先，否则 0（未选择）。
 func (s *Server) baitMountFor(ctx context.Context, rodGUID string) int64 {
@@ -145,7 +195,7 @@ func (s *Server) baitMountFor(ctx context.Context, rodGUID string) int64 {
 }
 
 // applyRigBaitMount 把玩家选中的安装方式写进竿实例 153.f8，并刷新版本戳。
-// f9（可选项）保持不变，否则弹窗会只剩玩家刚点的那一项。
+// f9（可选项）保持不变，否则弹窗会只剩玩家刚点的那一项；缺失时按钓组类型补。
 func (s *Server) applyRigBaitMount(ctx context.Context, rodGUID string, sel int64) error {
 	row, err := s.DB.GetItemByGUID(ctx, rodGUID)
 	if err != nil || row == nil {
@@ -161,13 +211,16 @@ func (s *Server) applyRigBaitMount(ctx context.Context, rodGUID string, sel int6
 	}
 	setRigBaitMountSel(fields[idx].Val, sel)
 	if _, avail := rigBaitMountsOf(fields[idx].Val); avail == 0 {
-		setRigBaitMountAvail(fields[idx].Val, defaultBaitMountAvail)
+		setRigBaitMountAvail(fields[idx].Val, baitMountAvailForRig(s.rigTypeOfItem(ctx, row), 0))
 	}
 	s.saveItemFields(ctx, row, fields)
 	return nil
 }
 
 // savedBaitMount 读取玩家在某根竿上选过的挂饵方式。
+// 旧选择不再属于该竿当前钓组类型的可选集时（换钓组后的残留值，含更早版本
+// 按全开掩码落库的存量），判为未设置——挂饵份数（baitHookCount）走同一读口，
+// 自动回退一份，不需要各读方重复校验。
 func (s *Server) savedBaitMount(ctx context.Context, rodGUID string) (int64, bool) {
 	if s.DB == nil || rodGUID == "" {
 		return 0, false
@@ -180,7 +233,18 @@ func (s *Server) savedBaitMount(ctx context.Context, rodGUID string) (int64, boo
 	if err != nil {
 		return 0, false
 	}
-	return clampBaitMount(v), true
+	sel := clampBaitMount(v)
+	if sel == 0 {
+		return 0, false
+	}
+	row, err := s.DB.GetItemByGUID(ctx, rodGUID)
+	if err != nil || row == nil {
+		return sel, true
+	}
+	if m, known := rigBaitMountAvail[s.rigTypeOfItem(ctx, row)]; known && sel&m != sel {
+		return 0, false
+	}
+	return sel, true
 }
 
 func (s *Server) savedReelClipM(ctx context.Context, rodGUID string) (int64, bool) {
