@@ -1051,14 +1051,14 @@ func hFishingLeft(ctx *Ctx) ([]byte, bool) {
 		// 只清理当前鱼，并在同一水中钓组上重新安排下一次判鱼；
 		// 路亚脱钩同样重新排鱼，收线途中仍可能再次咬钩。
 		//
-		// 官方语义（客户端状态机 gnfinieaahc）：
-		//   f0=1/2  咬钩/试探窗口超时，鱼从未上钩 → 静默（模板表无此类）。
-		//   f0=8    钩概率判定失钩（eabkpandbch 掷骰，浮钓状态机
-		//           pmlepacfcfm 经钩实体上报）。若客户端已确认过中鱼
-		//           （14/11 → st.Hooked），是搏鱼中钩被拉脱，语义等同
-		//           f0=7 真脱钩：播报模板 7 并计 escapes；路亚仍收线
-		//           续钓、同一杆重新排咬钩。未中鱼时是刺鱼瞬间钩没挂上，
-		//           同样静默。
+		// 官方语义（客户端状态机 + 2026-11-06 线上日志实证）：
+		// f0=1/2/8 只是客户端鱼 AI 不同的内部计时器/状态机路径
+		// （咬钩窗口、试探窗口、钩概率掷骰），**f0 本身不区分鱼
+		// 是否上过钩**——搏鱼中跑鱼同样走计时器路径报 f0=2
+		// （riv_rb_trout 一轮 14/14 → 14/11 → f0=2，全程无 8/7）。
+		// 是否真脱钩以服务端记的 14/11 中鱼确认（st.Hooked）为准：
+		//   已中鱼 → 跑鱼等同 f0=7 真脱钩：播报模板 7 并计 escapes；
+		//   未中鱼 → 吃饵/试探后游走，官方静默（模板表无此类）。
 		st.cancelBiteTimerLocked()
 		pending := st.Pending
 		alreadyResolved := st.Resolved
@@ -1070,17 +1070,12 @@ func hFishingLeft(ctx *Ctx) ([]byte, bool) {
 		castActive := st.CastActive
 		inWater := st.InWater
 		st.mu.Unlock()
-		if f0 == 8 && hooked && !alreadyResolved {
+		if hooked && !alreadyResolved {
 			srv.bumpFishingCounter(ctx.Sess.Userid, "escapes")
 			srv.notifyFishEscape(ctx.Sess, pending, "脱钩离开")
-		}
-		switch {
-		case f0 == 8 && hooked:
-			ctx.Log.Info("14/12 搏鱼中钩拉脱（已中鱼），按真脱钩播报", "f0", f0)
-		case f0 == 8:
-			ctx.Log.Info("14/12 钩未挂上（未中鱼），官方静默", "f0", f0)
-		default:
-			ctx.Log.Info("14/12 鱼未上钩游走（窗口超时），官方静默", "f0", f0)
+			ctx.Log.Info("14/12 已中鱼跑鱼，按真脱钩播报", "f0", f0)
+		} else {
+			ctx.Log.Info("14/12 鱼未上钩离场，官方静默", "f0", f0, "hooked", hooked)
 		}
 		if castActive && inWater {
 			srv.scheduleBiteState(ctx.Sess, st, false, false)
