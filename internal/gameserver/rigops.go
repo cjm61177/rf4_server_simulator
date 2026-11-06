@@ -2410,6 +2410,18 @@ func hRodTake(ctx *Ctx) ([]byte, bool) {
 		}
 		return nil, false
 	}
+	// 水域装备限制：当前地图禁用的竿不可取（客户端库存格已灰置时
+	// 正常走不到这里，兜底直发消息的情况）。
+	if reason := srv.placeRodViolation(ctx.Sess.pushCtx(), ctx.Sess.Userid, gear); reason != "" {
+		st.mu.Lock()
+		st.GearGuid = ""
+		st.mu.Unlock()
+		ctx.Log.Info("17/7 被拒：装备限制", "rod", shortGUID(gear), "reason", reason)
+		if body := castReady158(ctx, "", depthCM, 0); body != nil {
+			return body, true
+		}
+		return nil, false
+	}
 	// 同步建档和尖梢收敛；新竿的尖梢补齐后立即推送完整竿树。
 	if srv.ensureRig(ctx.Sess.pushCtx(), ctx.Sess.Userid, gear) {
 		ctx.Sess.Push4_22Full()
@@ -2455,6 +2467,12 @@ func hRodSetComp(ctx *Ctx) ([]byte, bool) {
 		extra = int64(ints[1])
 	}
 	cctx := ctx.Sess.pushCtx()
+	// 水域装备限制：当前地图禁用的物品（渔轮等）不允许装上竿。
+	if reason := srv.placeItemViolation(cctx, ctx.Sess.Userid, itemGUID); reason != "" {
+		ctx.Log.Info("17/2 被拒：装备限制", "item", shortGUID(itemGUID), "reason", reason)
+		ctx.ReplyFailure("System.InvalidOperationException", "当前水域限制："+reason)
+		return nil, true
+	}
 	res := srv.rigSetComponent(cctx, ctx.Sess.Userid, parentGUID, 0, itemGUID, extra,
 		rigSetOpts{ParentType: familyRod, EnforceCategory: true, SplitStack: true})
 	var snap *proto.Value
