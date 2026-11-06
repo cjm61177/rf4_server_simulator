@@ -2467,12 +2467,8 @@ func hRodSetComp(ctx *Ctx) ([]byte, bool) {
 		extra = int64(ints[1])
 	}
 	cctx := ctx.Sess.pushCtx()
-	// 水域装备限制：当前地图禁用的物品（渔轮等）不允许装上竿。
-	if reason := srv.placeItemViolation(cctx, ctx.Sess.Userid, itemGUID); reason != "" {
-		ctx.Log.Info("17/2 被拒：装备限制", "item", shortGUID(itemGUID), "reason", reason)
-		ctx.ReplyFailure("System.InvalidOperationException", "当前水域限制："+reason)
-		return nil, true
-	}
+	// 注意：官服允许装配限制渔轮（>6000 型在铜壶可装但不可抛），
+	// 这里不做水域装备校验；拦截统一放在 14/2 抛竿入口。
 	res := srv.rigSetComponent(cctx, ctx.Sess.Userid, parentGUID, 0, itemGUID, extra,
 		rigSetOpts{ParentType: familyRod, EnforceCategory: true, SplitStack: true})
 	var snap *proto.Value

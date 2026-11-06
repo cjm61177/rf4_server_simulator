@@ -744,13 +744,15 @@ func hCast(ctx *Ctx) ([]byte, bool) {
 		st.mu.Unlock()
 	}
 	// 水域装备限制：竿或已装渔轮被当前地图禁用时不可抛投
-	// （17/7、17/2 已拦正常路径，这里兜底已装配好才切图的情况）。
+	// （17/7 已拦正常路径，这里兜底已装配好才切图的情况）。
+	// 官服语义：装配放行、抛竿拦；用 136 (kOperationResult_WrongRegion)
+	// 弹正规文案，避免普通异常名落到「内部错误」。
 	if reason := srv.placeRigViolation(ctx.Sess.pushCtx(), ctx.Sess.Userid, gear); reason != "" {
 		st.mu.Lock()
 		st.GearGuid = ""
 		st.mu.Unlock()
 		ctx.Log.Info("14/2 被拒：装备限制", "rod", shortGUID(gear), "reason", reason)
-		ctx.ReplyFailure("System.InvalidOperationException", "当前水域限制："+reason)
+		ctx.ReplyOperationResult(136) // kOperationResult_WrongRegion
 		return nil, true
 	}
 	// 14/1 给出的是满力度上限；14/2 才携带本次实际落点、动作和出手力度。
