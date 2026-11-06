@@ -84,9 +84,42 @@ func awaitPushEnvelope(t *testing.T, gc *tunnel.Conn) *proto.Envelope {
 	}
 }
 
-// 脱钩（14/12 f0=8）应经聊天频道（24/27，kind=0）推送跑鱼提示：
-// 客户端自身只播放脱钩动画，没有任何文字提示。
-func TestFishEscapePushesSystemChat(t *testing.T) {
+// 未上钩离场（14/12 f0=1/2/8，鱼吃饵/试探后游走，从未上钩）官方语义
+// 静默：客户端模板表无「未上钩」类，客户端自己播游走动画；服务端
+// 不得再广播模板 7「鱼脱钩了」（鱼从未上钩，语义不成立）。
+func TestFishUnhookedDepartureIsSilent(t *testing.T) {
+	srv, _ := newRigTestServer(t)
+	sess, gc := newTunnelProbe(t, srv)
+
+	st := srv.stateFor(sess.Userid)
+	st.mu.Lock()
+	st.CastActive = true
+	st.Pending = &RolledFish{Species: "g_tench", WeightG: 547}
+	st.mu.Unlock()
+
+	for _, f0 := range []uint64{1, 2, 8} {
+		tree := proto.Args524(proto.Obj("lhicjpmglbo", 0,
+			proto.Field{Op: "U32", Num: ptrU64(f0)}))
+		if _, ok := hFishingLeft(miscCtx(sess, 14, 12, tree)); !ok {
+			t.Fatalf("14/12 f0=%d 未处理", f0)
+		}
+	}
+
+	// 静默断言：短窗口内不得有任何推送。
+	ch := make(chan error, 1)
+	go func() {
+		_, _, _, err := gc.ReadRecord()
+		ch <- err
+	}()
+	select {
+	case err := <-ch:
+		t.Fatalf("f0=1/2/8 未上钩离场不应产生任何推送，实得 %v", err)
+	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+// 真脱钩（f0=7，搏鱼中钩引用消失，鱼曾上钩）保留官方模板 7 播报。
+func TestFishTrueEscapeStillBroadcasts(t *testing.T) {
 	srv, _ := newRigTestServer(t)
 	sess, gc := newTunnelProbe(t, srv)
 
@@ -97,14 +130,14 @@ func TestFishEscapePushesSystemChat(t *testing.T) {
 	st.mu.Unlock()
 
 	tree := proto.Args524(proto.Obj("lhicjpmglbo", 0,
-		proto.Field{Op: "U32", Num: ptrU64(8)}))
+		proto.Field{Op: "U32", Num: ptrU64(7)}))
 	if _, ok := hFishingLeft(miscCtx(sess, 14, 12, tree)); !ok {
-		t.Fatal("14/12 f0=8 未处理")
+		t.Fatal("14/12 f0=7 未处理")
 	}
 
 	env := awaitPushEnvelope(t, gc)
 	if env.Main != 24 || env.Sub != 27 {
-		t.Fatalf("跑鱼提示应走 24/27，实得 %d/%d", env.Main, env.Sub)
+		t.Fatalf("脱钩提示应走 24/27，实得 %d/%d", env.Main, env.Sub)
 	}
 	dec, _, err := proto.DecodeValue(env.Body, 0, srv.Table())
 	if err != nil {
@@ -116,7 +149,7 @@ func TestFishEscapePushesSystemChat(t *testing.T) {
 	// 脱钩走官方模板类型 7（"player 鱼脱钩了"），文本为空由客户端渲染。
 	mf0 := dec.Items[0].Field(0)
 	if got := mf0.Num; got == nil || u64Of(got) != 7 {
-		t.Fatalf("脱钩应走模板类型 7，实得 %v", got)
+		t.Fatalf("真脱钩应走模板类型 7，实得 %v", got)
 	}
 }
 
