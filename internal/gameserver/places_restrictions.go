@@ -13,10 +13,13 @@ import (
 // 水域装备限制（服务端镜像）。
 //
 // 客户端 ebjhdhighdj 静态注册表按 level key 记录「本水域禁用什么装备」，
-// 由地点详情 UI 和库存格在客户端自行拦截；但 hTravel/装配/抛竿入口原本
-// 不设防，直接发消息可以绕过。本文件把同一张规则表内嵌到服务端，在
-// 17/7 取竿、17/2 装配件、14/1、14/2 抛竿四个入口做第二道防线，
+// 由地点详情 UI 和库存格在客户端自行拦截；但装配/抛竿入口原本
+// 不设防，直接发消息可以绕过。本文件把同一张规则表内嵌到服务端，
+// 在 17/7 取竿、14/1 抛竿准备、14/2 抛竿三个入口做第二道防线，
 // 保证 DB 不会出现官服不可能出现的钓组状态。
+//
+// 官服语义（实测对照）：限制渔轮允许装配（17/2 不拦，客户端装配弹窗
+// 也不校验），只在抛竿时禁止。
 
 //go:embed assets/places_restrictions.json
 var placesRestrictionsJSON []byte
@@ -119,24 +122,6 @@ func (s *Server) currentPlaceRules(ctx context.Context, uid int64) []placeGearRu
 		return nil
 	}
 	return restrictionsForLevel(loc.LevelKey)
-}
-
-// placeItemViolation 检查单个物品（按 GUID）是否违反当前地图规则。
-// 17/2 装配件入口用：只拦规则命中的竿/轮，其余品类放行。
-func (s *Server) placeItemViolation(ctx context.Context, uid int64, guid string) string {
-	rules := s.currentPlaceRules(ctx, uid)
-	if len(rules) == 0 || guid == "" {
-		return ""
-	}
-	row, err := s.DB.GetItemByGUID(ctx, guid)
-	if err != nil || row == nil || row.UID != uid {
-		return ""
-	}
-	def, err := s.itemDefForRow(ctx, row)
-	if err != nil || def == nil {
-		return ""
-	}
-	return placeGearViolationReason(def, rules)
 }
 
 // placeRodViolation 检查一根竿（含其整体定义）是否违反当前地图规则。
