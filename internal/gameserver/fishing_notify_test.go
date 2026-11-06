@@ -118,36 +118,39 @@ func TestFishUnhookedDepartureIsSilent(t *testing.T) {
 	}
 }
 
-// 已中鱼后钩被拉脱（14/11 确认中鱼 → f0=8，浮钓搏鱼失钩经钩实体
-// 上报，路亚脱钩同型）语义等同 f0=7 真脱钩：应播报模板 7。
-func TestFishHookedTearOffBroadcasts(t *testing.T) {
+// 已中鱼后跑鱼（14/11 确认中鱼 → 14/12 f0=1/2/8）：客户端搏鱼失钩
+// 经计时器路径上报，f0 不区分「曾上钩」与「未上钩」（线上实证：
+// 14/14 → 14/11 → f0=2，全程无 8/7）。服务端以 st.Hooked 为准，
+// 已中鱼的跑鱼等同 f0=7 真脱钩：应播报模板 7。
+func TestFishHookedEscapeBroadcasts(t *testing.T) {
 	srv, _ := newRigTestServer(t)
-	sess, gc := newTunnelProbe(t, srv)
+	for _, f0 := range []uint64{1, 2, 8} {
+		sess, gc := newTunnelProbe(t, srv)
+		st := srv.stateFor(sess.Userid)
+		st.mu.Lock()
+		st.CastActive = true
+		st.Hooked = true
+		st.Pending = &RolledFish{Species: "g_tench", WeightG: 547}
+		st.mu.Unlock()
 
-	st := srv.stateFor(sess.Userid)
-	st.mu.Lock()
-	st.CastActive = true
-	st.Hooked = true
-	st.Pending = &RolledFish{Species: "g_tench", WeightG: 547}
-	st.mu.Unlock()
+		tree := proto.Args524(proto.Obj("lhicjpmglbo", 0,
+			proto.Field{Op: "U32", Num: ptrU64(f0)}))
+		if _, ok := hFishingLeft(miscCtx(sess, 14, 12, tree)); !ok {
+			t.Fatalf("14/12 f0=%d 未处理", f0)
+		}
 
-	tree := proto.Args524(proto.Obj("lhicjpmglbo", 0,
-		proto.Field{Op: "U32", Num: ptrU64(8)}))
-	if _, ok := hFishingLeft(miscCtx(sess, 14, 12, tree)); !ok {
-		t.Fatal("14/12 f0=8 未处理")
-	}
-
-	env := awaitPushEnvelope(t, gc)
-	if env.Main != 24 || env.Sub != 27 {
-		t.Fatalf("拉脱播报应走 24/27，实得 %d/%d", env.Main, env.Sub)
-	}
-	dec, _, err := proto.DecodeValue(env.Body, 0, srv.Table())
-	if err != nil {
-		t.Fatalf("推送 body 不可解码: %v", err)
-	}
-	mf0 := dec.Items[0].Field(0)
-	if got := mf0.Num; got == nil || u64Of(got) != 7 {
-		t.Fatalf("已中鱼拉脱应走模板类型 7，实得 %v", got)
+		env := awaitPushEnvelope(t, gc)
+		if env.Main != 24 || env.Sub != 27 {
+			t.Fatalf("f0=%d 拉脱播报应走 24/27，实得 %d/%d", f0, env.Main, env.Sub)
+		}
+		dec, _, err := proto.DecodeValue(env.Body, 0, srv.Table())
+		if err != nil {
+			t.Fatalf("f0=%d 推送 body 不可解码: %v", f0, err)
+		}
+		mf0 := dec.Items[0].Field(0)
+		if got := mf0.Num; got == nil || u64Of(got) != 7 {
+			t.Fatalf("f0=%d 已中鱼跑鱼应走模板类型 7，实得 %v", f0, got)
+		}
 	}
 }
 
