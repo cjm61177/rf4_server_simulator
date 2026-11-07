@@ -21,6 +21,9 @@ type catchReceipt struct {
 	IsRecord                                         bool
 	SkillID                                          int64
 	CaughtAt                                         float64
+	// CardGUID 是本次结算掉落的卡牌物品 guid（未掉卡为空）。回执重放时
+	// 原样带出，14/4 仍能重推库存同步而不会二次发卡。
+	CardGUID string `json:",omitempty"`
 }
 
 func (r catchReceipt) result(replayed bool) *settleXpResult {
@@ -30,7 +33,8 @@ func (r catchReceipt) result(replayed bool) *settleXpResult {
 	}
 	return &settleXpResult{baseXP: r.BaseXP, totalXP: r.TotalXP, premiumXP: r.PremiumXP, bonuses: r.Bonuses, skillGain: gain, silver: r.Silver,
 		prevBest: r.PreviousBest, newLevel: r.Level, totalXp: r.AccumulatedXP,
-		levelsGained: r.LevelsGained, isRecord: r.IsRecord, skillID: r.SkillID, replayed: replayed}
+		levelsGained: r.LevelsGained, isRecord: r.IsRecord, skillID: r.SkillID, replayed: replayed,
+		cardGUID: r.CardGUID}
 }
 
 type catchWear struct {
@@ -151,6 +155,16 @@ func (s *Server) settleCatchOnce(ctx context.Context, uid int64, f *RolledFish, 
 	if err != nil {
 		return nil, err
 	}
+	// 掉卡准备在事务外（静态库查询纪律，同 craft_ops）；事务内只入库。
+	// 掉卡失败不影响结算本身，降级为不产卡。
+	var cardItem *store.Item
+	if s.rollCardDrop(ctx, f) {
+		cardItem, err = s.prepareNewCard(ctx, uid, f)
+		if err != nil {
+			s.log.Warn("掉卡构造失败，本次不产卡", "uid", uid, "fish", shortGUID(f.FishGUID), "err", err)
+			cardItem = nil
+		}
+	}
 	if sess := s.liveSessionByUID(uid); sess != nil {
 		sess.updateHappyHour(time.Now(), false)
 	}
@@ -250,6 +264,16 @@ func (s *Server) settleCatchOnce(ctx context.Context, uid int64, f *RolledFish, 
 		}
 		if err := store.AddItemDamageLog(ctx, tx, change.log); err != nil {
 			return nil, err
+		}
+	}
+	// 掉卡入库（事务内，与经验/磨损同一事务提交）：卡 guid 进回执，
+	// 重放结算时凭回执去重，绝不二次发卡。入库失败降级为不产卡。
+	if cardItem != nil {
+		granted, _, err := grantPreparedItemTx(ctx, tx, cardItem, false)
+		if err != nil {
+			s.log.Warn("掉卡入库失败，本次不产卡", "uid", uid, "err", err)
+		} else {
+			r.CardGUID = granted.GUID
 		}
 	}
 	raw, err := json.Marshal(r)

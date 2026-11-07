@@ -67,6 +67,8 @@ func NewServer(cfg config.Admin, db *store.DB, log logger, webFS fs.FS) *Server 
 	mux.HandleFunc("POST /api/players/update", auth(s.handlePlayerUpdate))
 	mux.HandleFunc("POST /api/players/membership", auth(s.handlePlayerMembership))
 	mux.HandleFunc("POST /api/players/grant", auth(s.handleGrantItem))
+	mux.HandleFunc("GET /api/cards", auth(s.handlePlayerCards))
+	mux.HandleFunc("POST /api/cards/grant_deck", auth(s.handleCardGrantDeck))
 	mux.HandleFunc("POST /api/players/items/delete", auth(s.handlePlayerItemDelete))
 	mux.HandleFunc("POST /api/players/keepnet/add", auth(s.handlePlayerKeepnetAdd))
 	mux.HandleFunc("POST /api/players/keepnet/delete", auth(s.handlePlayerKeepnetDelete))
@@ -424,6 +426,43 @@ func (s *Server) handleGrantItem(w http.ResponseWriter, r *http.Request) {
 	}))
 	_ = s.db.AuditLogWrite(r.Context(), adminOf(r), "grant_item",
 		strconv.FormatInt(req.UID, 10), fmt.Sprintf("%s x%d", req.ItemID, req.Qty))
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// handlePlayerCards 返回玩家的卡组收集进度（只读，直接查共享库，
+// 走 gameserver.CardDeckProgress 与发卡侧同一套卡组解析）。
+func (s *Server) handlePlayerCards(w http.ResponseWriter, r *http.Request) {
+	uid, err := strconv.ParseInt(r.URL.Query().Get("uid"), 10, 64)
+	if err != nil || uid == 0 {
+		httpError(w, 400, "参数错误")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	decks, err := gameserver.CardDeckProgress(ctx, s.db, uid)
+	if err != nil {
+		httpError(w, 500, "查询卡组进度失败: "+err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"uid": uid, "decks": decks})
+}
+
+// handleCardGrantDeck 将发整组卡指令写入共享队列，由 gameserver 执行
+// （跳过已拥有的卡逐张发放，集齐后自动补发奖座）。
+func (s *Server) handleCardGrantDeck(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		UID    int64  `json:"uid"`
+		DeckID string `json:"deck_id"`
+	}
+	if err := readJSON(r, &req); err != nil || req.UID == 0 || req.DeckID == "" {
+		httpError(w, 400, "参数错误")
+		return
+	}
+	_ = s.db.QueuePush(r.Context(), mustJSON(map[string]any{
+		"op": "grant_deck", "uid": req.UID, "deck_id": req.DeckID,
+	}))
+	_ = s.db.AuditLogWrite(r.Context(), adminOf(r), "grant_deck",
+		strconv.FormatInt(req.UID, 10), req.DeckID)
 	writeJSON(w, map[string]any{"ok": true})
 }
 

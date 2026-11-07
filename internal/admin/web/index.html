@@ -305,7 +305,7 @@ function renderPlayerDetail(){
   const p=PLAYER;
   $('#playerDetail').innerHTML=`
     <div class="player-hero"><div><h2>${esc(p.name)} <span class="muted">#${p.uid}</span></h2><div class="sub">Lv.${p.level} · XP ${fmt(p.xp)} · 背包/装备 ${p.item_count} · 护网 ${p.keepnet_count} · 邮件 ${p.mail_count}</div></div><div class="actions"><button class="btn alt sm" onclick="kickPlayer()">踢下线</button><button class="${p.banned?'btn good':'btn bad'} sm" onclick="toggleBan()">${p.banned?'解除封禁':'封禁玩家'}</button></div></div>
-    <div class="tabs"><button class="${PLAYER_TAB==='profile'?'on':''}" onclick="setPlayerTab('profile')">档案与资产</button><button class="${PLAYER_TAB==='items'?'on':''}" onclick="setPlayerTab('items')">背包 / 装备</button><button class="${PLAYER_TAB==='keepnet'?'on':''}" onclick="setPlayerTab('keepnet')">护网</button><button class="${PLAYER_TAB==='skills'?'on':''}" onclick="setPlayerTab('skills')">技能熟练度</button><button class="${PLAYER_TAB==='mail'?'on':''}" onclick="setPlayerTab('mail')">邮箱</button></div>
+    <div class="tabs"><button class="${PLAYER_TAB==='profile'?'on':''}" onclick="setPlayerTab('profile')">档案与资产</button><button class="${PLAYER_TAB==='items'?'on':''}" onclick="setPlayerTab('items')">背包 / 装备</button><button class="${PLAYER_TAB==='keepnet'?'on':''}" onclick="setPlayerTab('keepnet')">护网</button><button class="${PLAYER_TAB==='cards'?'on':''}" onclick="setPlayerTab('cards')">卡牌</button><button class="${PLAYER_TAB==='skills'?'on':''}" onclick="setPlayerTab('skills')">技能熟练度</button><button class="${PLAYER_TAB==='mail'?'on':''}" onclick="setPlayerTab('mail')">邮箱</button></div>
     <div id="playerTabBody"></div>`;
   renderPlayerTab();
 }
@@ -327,6 +327,7 @@ function renderPlayerTab(){
   }
   if(PLAYER_TAB==='items')renderItems();
   if(PLAYER_TAB==='keepnet')renderKeepnet();
+  if(PLAYER_TAB==='cards')renderCards();
   if(PLAYER_TAB==='skills')renderSkills();
   if(PLAYER_TAB==='mail')renderPlayerMail();
 }
@@ -381,6 +382,12 @@ async function saveSkill(id){const points=+$('#sk_'+id).value;await api('/api/pl
 async function resetSkills(){askConfirm('清空技能熟练度','把该玩家所有钓鱼技能熟练度设为 0%，不可恢复。',async()=>{for(const s of PLAYER.skills||[])await api('/api/players/skills/update',{method:'POST',body:JSON.stringify({uid:PLAYER.uid,skill_id:s.skill_id,points:0})});toast('已清空熟练度，见审计日志');await selectPlayer(PLAYER.uid);setPlayerTab('skills')})}
 function renderPlayerMail(){const rows=PLAYER.mails||[];$('#playerTabBody').innerHTML=`<div class="table-wrap"><table><thead><tr><th>ID</th><th>正文</th><th>类型</th><th>状态</th><th>时间</th></tr></thead><tbody>${rows.map(m=>`<tr><td>${m.id}</td><td style="white-space:normal">${esc(m.text||'(附件邮件)')}</td><td>${m.kind?'附件':'文本'}</td><td>${m.read?'<span class="pill">已读</span>':'<span class="pill ok">未读</span>'}</td><td>${timeText(m.created_ts)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">邮箱为空</td></tr>'}</tbody></table></div><div class="actions"><button class="btn" onclick="prefillMail(${PLAYER.uid})">给该玩家发邮件</button></div>`}
 async function kickPlayer(){askConfirm('踢下线','把该玩家从服务器断开，可随时重新登录。',async()=>{await api('/api/players/kick',{method:'POST',body:JSON.stringify({uid:PLAYER.uid})});toast('已踢下线，见审计日志')})}
+async function renderCards(){
+  $('#playerTabBody').innerHTML='<p class="muted">加载卡组进度…</p>';
+  const decks=(await api(`/api/cards?uid=${PLAYER.uid}`)).decks||[];
+  $('#playerTabBody').innerHTML=`<p class="muted">掉卡概率由 tunables <span class="mono">card_drop_common / card_drop_rare / card_drop_super</span> 控制（默认 0 = 关闭）。单张发卡走「背包 / 装备」页「+ 发放物品」，填 card_&lt;鱼种&gt; 会自动附带渔获快照。</p><div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>卡组</th><th>进度</th><th>缺失卡</th><th>集齐奖座</th><th></th></tr></thead><tbody>${decks.map(d=>`<tr><td class="mono">${esc(d.deck_id)}</td><td><span class="pill ${d.owned>=d.total?'ok':''}">${d.owned}/${d.total}</span></td><td class="muted mono" style="white-space:normal">${d.missing.map(esc).join('、')||'—'}</td><td class="mono">${esc(d.statuette)}</td><td class="right"><button class="btn sm" data-deck="${esc(d.deck_id)}" onclick="grantDeck(this.dataset.deck)">发整组（补缺 ${d.total-d.owned}）</button></td></tr>`).join('')||'<tr><td colspan="5" class="empty">静态库没有卡组定义（category 82）</td></tr>'}</tbody></table></div>`;
+}
+async function grantDeck(deckId){await api('/api/cards/grant_deck',{method:'POST',body:JSON.stringify({uid:PLAYER.uid,deck_id:deckId})});toast('整组卡已下发，约 2 秒内到达');await sleep(2300);await selectPlayer(PLAYER.uid);setPlayerTab('cards')}
 async function toggleBan(){const banned=!PLAYER.banned;askConfirm(banned?'封禁玩家':'解除封禁',banned?'该玩家将无法登录游戏。':'该玩家恢复登录资格。',async()=>{await api('/api/players/ban',{method:'POST',body:JSON.stringify({uid:PLAYER.uid,banned})});toast(banned?'已封禁，见审计日志':'已解封，见审计日志');await selectPlayer(PLAYER.uid)})}
 const debounceTimers={};
 function debounce(key,fn,ms=240){clearTimeout(debounceTimers[key]);debounceTimers[key]=setTimeout(fn,ms)}

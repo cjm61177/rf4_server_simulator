@@ -704,6 +704,7 @@ type AdminCommand struct {
 	Channel      int64               `json:"channel,omitempty"`  // fish_tv_test：聊天推送通道 24..31
 	Kind         int64               `json:"kind,omitempty"`     // fish_tv_test：401.f0 消息类型；负值为参数位探测
 	KVShape      int64               `json:"kv_shape,omitempty"` // fish_tv_test：401.f4 模板 KV 形状或外层参数探测编号
+	DeckID       string              `json:"deck_id,omitempty"`  // grant_deck：卡组 item_id（tcdeck_*）
 }
 
 // StartAdminSubscriber 轮询共享 SQLite 队列，每 2 秒处理一批管理指令。
@@ -748,6 +749,11 @@ func (s *Server) execAdminCmd(cmd *AdminCommand) {
 			s.log.Info("管理指令：踢下线", "uid", cmd.UID)
 		}
 	case "grant_item":
+		// 卡牌走专用路径：f0 需嵌渔获快照，普通 prepareNewItem 产空白卡。
+		if strings.HasPrefix(cmd.ItemID, cardItemIDPrefix) {
+			s.pushItemGUIDs(cmd.UID, s.adminGrantCardQueue(ctx, cmd.UID, cmd.ItemID, cmd.Qty))
+			break
+		}
 		row, _, err := s.AddToStack(ctx, cmd.UID, cmd.ItemID, "backpack", cmd.Qty)
 		if err != nil {
 			s.log.Warn("管理指令：发物品失败", "uid", cmd.UID, "item", cmd.ItemID, "err", err)
@@ -755,6 +761,8 @@ func (s *Server) execAdminCmd(cmd *AdminCommand) {
 			s.pushItemUpdate(cmd.UID, row)
 			s.log.Info("管理指令：发物品", "uid", cmd.UID, "item", cmd.ItemID, "qty", cmd.Qty)
 		}
+	case "grant_deck":
+		s.pushItemGUIDs(cmd.UID, s.adminGrantDeckQueue(ctx, cmd.UID, cmd.DeckID))
 	case "delete_item":
 		deleted := make([]string, 0, len(cmd.GUIDs))
 		for _, guid := range cmd.GUIDs {
@@ -920,6 +928,16 @@ func (s *Server) pushItemUpdate(uid int64, row *store.Item) {
 	}
 	for _, sess := range s.sessionsForUID(uid) {
 		sess.Push(4, 22, proto.Args(proto.S("61"), tree))
+	}
+}
+
+// pushItemGUIDs 按管理指令结果推送 4/22（指定 guid 的物品树）；空列表忽略。
+func (s *Server) pushItemGUIDs(uid int64, guids []string) {
+	if len(guids) == 0 {
+		return
+	}
+	for _, sess := range s.sessionsForUID(uid) {
+		sess.Push4_22ItemGUIDs(guids)
 	}
 }
 

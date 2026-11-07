@@ -33,6 +33,7 @@ type settleXpResult struct {
 	isRecord     bool    // 是否破个人纪录
 	skillID      int64   // 310.f2 钓法大类（1 浮钓 / 2 纺车 / 3 底钓 / 11 海钓）
 	skillGain    float64 // 310.f3 本次实际熟练度增量
+	cardGUID     string  // 本次结算掉落的卡牌 guid（空=未掉卡；回执重放时原样带出）
 }
 
 // grantXpMonotonic 增加累计经验并重算等级，保证等级不下降。
@@ -411,6 +412,18 @@ func (s *Server) fishingEndSettle(ctx *Ctx) ([]byte, bool) {
 	}
 	if hasFish && !res.replayed {
 		ctx.Sess.Push2_1()
+	}
+	// 掉卡后补查卡组奖座（独立短事务，幂等）；新卡与奖座一并经 4/22
+	// 同步给客户端。回执重放也会走到这里：凭 guid 重推，不会重复发放。
+	if hasFish && res != nil && res.cardGUID != "" {
+		deckGuids, derr := s.checkCardDecks(cctx, uid, cardItemIDPrefix+pending.Species)
+		if derr != nil {
+			ctx.Log.Warn("卡组检查失败", "uid", uid, "err", derr)
+		}
+		guids := make([]string, 0, 1+len(deckGuids))
+		guids = append(guids, res.cardGUID)
+		guids = append(guids, deckGuids...)
+		ctx.Sess.Push4_22ItemGUIDs(guids)
 	}
 	// 收竿时补挂同种库存，供客户端校验下一次抛竿；搏鱼中不补挂。
 	// 补挂后的钓组和背包数量在 801 响应发送后同步，避免结算覆盖数量更新。
