@@ -33,13 +33,42 @@
 
 数据、wire 编码能力全部现成；**服务端零发放逻辑**——全仓无 `card_` 引用，钓获结算不产卡。客户端侧（结算弹出、收藏册、卖卡确认）预期随库存同步自动工作，未实测。
 
-## 实现草案（未排期）
+## 实现方案（2026-11-07 基于 local-live `2e65a3d` 代码调查）
 
-1. 钓获入护（14/5）或结算（14/4）时按几率掉卡：插一条 `card_<species>` 物品（wire `dapkdcghfmg`，f0 内嵌本次 25 鱼快照）进背包/储藏，走现有库存同步。
-2. 掉率为本地玩法数值，做成 tunable；可按物种稀有度分层（普通/稀有/超稀有递增）。
-3. 卡组收集判定与奖座发放是服务端职责，需读玩家卡库存对照 `cjmjfnheidh` 清单。
+### 落点选择：结算事务（settleCatchOnce），不选 14/5 入护
+
+掉卡钩子放 `settleCatchOnce`（`internal/gameserver/catch_settlement.go:110`）的经济事务内，不放 14/5 入护：
+
+- 结算是每尾鱼**恰好一次**的路径（回执幂等：kv 键 `catch-settlement:<uid>:<鱼guid>`，tx 内 `UPDATE kv SET v=v` 抢写锁，重放走 `decodeReceipt` 返回旧回执），天然防同一尾鱼双掉卡；14/5 入护/放生各走一次，账不好记。
+- 事务内已有本次渔获的完整上下文（`*RolledFish`：Species/Grade/WeightG）和 `tx` 连接——稀有度查询用 `store.SpeciesRarityTx(ctx, tx, f.Species)`（`repos_species_rarity.go:41`，单连接池纪律：事务内禁止池化查询）。
+
+### 发卡步骤（全部在 settleCatchOnce 事务内）
+
+1. **判定掉率**：`rand.Float64()` 对照 tunable 分层费率——
+   `card_drop_common` / `card_drop_rare` / `card_drop_super`（`s.tunableF(key, 0)`，`fishing.go:436`；默认 0 = 功能关闭，与 `fish_tv_kv` 同款开关习惯，admin 面板 kv 可调）。稀有度 0/1/2 → 三档。全档未命中则跳过后续。
+2. **构造卡物品**：仿 `prepareNewItem`（`items.go:1160`）——`GetItemDefByItemID(ctx, "card_"+f.Species)` 取 def；类目映射 `78 → {"dapkdcghfmg", 11301}` 已在 `items.go:121`，`resolveWireClass` 自动选中；`applyDefAttrs` 自动铺 def 属性（价值/资产类型）。卡牌是**独立实例**：78 不在 `countableCategories`（`items.go:138`），合并发放必须 `merge=false`。
+3. **嵌鱼快照（f0 peipahjmida）**：卡 wire 类字段表 f0=VAL（`tables.go:445`：`{"VAL","GUID16","OPTGUID",...}`）。复用 `s.buildPending25(f, st, level)`（`econ.go:229`）构造与结算卡同一棵 25 鱼树，然后按标本板先例 `embedMountedFish`（`craft_ops.go:1173`）同款写法：
+   `fields[0] = proto.Field{Op: "VAL", Val: tree}` → `FieldsToJSON` 写回 `it.FieldsJSON`。
+   树内鱼 guid 用 `uuid5OIDHex(cardGUID + "/card_fish")` 派生，避免与鱼护内原鱼同 guid（同 `mountedFishTreeTx` 的做法）。建议新 helper `prepareNewCardTx(ctx, tx, uid, f)` 承载 2~3 步（需要 tx 查稀有度）。
+4. **入库**：`grantPreparedItemTx(ctx, tx, card, false)`（`economy_tx.go:282`）入 `backpack`。
+5. **回执扩展**：`catchReceipt` 加 `CardGUID string \`json:",omitempty"\``（`catch_settlement.go:22`）随回执 JSON 落 kv——重放结算时 `result(true)` 带出卡 guid，14/4 handler 仍能重推库存同步而不会二次发卡。
+6. **库存推送**：14/4 响应（801）发出后，`fishingEndSettle` 尾部（`progress_ops.go:404` 起的补饵推送同段）调
+   `ctx.Sess.Push4_22ItemGUIDs([]string{cardGUID})`（`profilebuild.go:450`，只推指定物品树）。
+   **不要用 Push4_21**——那是移除信号（`profilebuild.go:408`）。已知卡牌 wire 编码可走 `ItemToTree` 通用路径，无需专门适配。
+
+### 卡组判定与奖座（第二期）
+
+- 清单来源：`ListItemDefsByCategory(ctx, 82)`（`repos2.go:465`），AttrsJSON 解析数组属性 `cjmjfnheidh`（`defAttrs` 同款 json.Unmarshal，`items.go:951`）得到卡 def 清单。
+- 判定时机：发卡事务内追加检查（只在掉卡时触发，成本可忽略）——按所属卡组查
+  `SELECT COUNT(DISTINCT item_id) FROM item WHERE uid=? AND item_id IN (…)` 对照清单长度。
+- 奖座发放：集齐 → `prepareNewItem` + `grantPreparedItemTx` 发 `statuette_cards_*` 进 `house` 容器（`misc_fix.go:805` 惯例）；发前查重（背包/房屋已有该 statuette 或 kv 记账）防重复发。
+
+### 测试与迁移
+
+- 无 schema 变更、无迁移；tunables 走 kv 表。
+- 测试层：gameserver handler 测试（handlerBox invoke 惯例）——tunable 调到 1.0 后跑 14/4，断言：item 表新增 `card_<species>` 行（wire_class=dapkdcghfmg）、FieldsJSON f0 内嵌 25 树、kv 回执含 CardGUID；**用同一 call_id 重放 14/4 断言不双发卡**；tunable=0 断言不掉卡。
 
 ## 待确认点
 
 - 官方掉率不公开，社区资料也缺；分层几率是自定数值。
-- 结算画面如何把卡归到"本次钓获"（成绩条目物品数组的填充来源是深状态链 `llgjfoldbcc`/`emifcdomieb`，未追到底）；实现时需实测确认"结算时背包里恰好有新卡"是否足够触发弹出。
+- 结算画面如何把卡归到"本次钓获"（成绩条目物品数组的填充来源是深状态链 `llgjfoldbcc`/`emifcdomieb`，未追到底）。已核实 813 结算对象 `ndiejnnioni` 只有 f0~f9 十个字段、无物品数组（`tables.go:689`）——弹卡显示走的是客户端从背包状态自取，实现后需实测确认"结算响应后推 4/22 新卡"是否足够触发弹出与音效。
