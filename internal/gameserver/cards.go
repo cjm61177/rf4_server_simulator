@@ -3,11 +3,14 @@ package gameserver
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"math/rand"
 	"strings"
 	"time"
 
+	"rf4server/internal/proto"
 	"rf4server/internal/store"
+	"rf4server/internal/wiregen"
 )
 
 // 集换式卡牌（category 78，item_id 前缀 card_）：钓获结算按物种稀有度
@@ -297,6 +300,62 @@ func (s *Server) adminGrantDeckQueue(ctx context.Context, uid int64, deckID stri
 		guids = append(guids, deckGuids...)
 	}
 	return guids
+}
+
+// buildCardDeckArray 构造 24/18 档案聚合（2003 lnhgjpfnhhi）的 f9 卡组数组
+// imdcjllgdcn[]。收藏册（RUIModelExplorerPanel_1<ddkpcmhdfdb>）从该数组读玩家
+// 各卡组已收集的卡。args code 340 = ckfmndabaei 在 bicjdghfleb 注册表的显式
+// 序号（341=dapkdcghfmg 同表，174=icadfbpiboh[] 同理，已在 801.f0 验证）。
+// 卡组对象：f0=拥有的卡树（与 4/22 同一棵，args 61）、f1=mkkhpfgnjei（>0 客户端
+// lhhhaehghfe 才视为已开始收集）、f2=uid+deck 派生实例 guid、f5=deck numeric id。
+func (s *Server) buildCardDeckArray(ctx context.Context, uid int64) (*proto.Value, error) {
+	decks, err := loadCardDecks(ctx, s.DB)
+	if err != nil {
+		return nil, err
+	}
+	objs := make([]*proto.Value, 0, len(decks))
+	if len(decks) == 0 {
+		return proto.Args(proto.S("340")), nil
+	}
+	rows, err := s.DB.ListItemsByItemIDPrefix(ctx, uid, cardItemIDPrefix)
+	if err != nil {
+		return nil, err
+	}
+	byItem := map[string][]*store.Item{}
+	for _, r := range rows {
+		byItem[r.ItemID] = append(byItem[r.ItemID], r)
+	}
+	for _, d := range decks {
+		var trees []*proto.Value
+		for _, c := range d.Cards {
+			for _, r := range byItem[c] {
+				tree, terr := s.ItemToTree(ctx, r)
+				if terr != nil || tree == nil {
+					continue
+				}
+				trees = append(trees, tree)
+			}
+		}
+		var started uint64
+		if len(trees) > 0 {
+			started = uint64(time.Now().Unix())
+		}
+		numID := uint32(0)
+		if def, derr := s.DB.GetItemDefByItemID(ctx, d.DeckID); derr == nil && def != nil && def.NumericID > 0 {
+			numID = uint32(def.NumericID)
+		}
+		obj, oerr := wiregen.MakeObj("ckfmndabaei", map[int]*proto.Value{
+			0: proto.Args(proto.S("61"), trees...),
+			1: proto.U64(started),
+			2: proto.Guid(uuid5OIDHex(fmt.Sprintf("tcard-deck:%d:%s", uid, d.DeckID))),
+			5: proto.U32(numID),
+		})
+		if oerr != nil {
+			return nil, oerr
+		}
+		objs = append(objs, obj)
+	}
+	return proto.Args(proto.S("340"), objs...), nil
 }
 
 // CardDeckProgress 管理端只读视图：全部卡组 + 玩家拥有情况。

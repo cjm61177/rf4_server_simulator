@@ -46,9 +46,23 @@ func bytesWrappedObject(inner *proto.Value, table *proto.OpsTable) (*proto.Value
 
 func hSocialUserProfile(ctx *Ctx) ([]byte, bool) {
 	uid := firstRequestUID(ctx)
-	inner := wiregen.MustMakeObj("feaidppnpch", map[int]*proto.Value{
+	values := map[int]*proto.Value{
 		0: proto.U32(uint32(uid)),
-	})
+	}
+	// f9 kiflcpfmehe = 卡组数组 imdcjllgdcn[]（args code 340）：收藏册
+	// （ddkpcmhdfdb → RUIModelExplorerPanel_1）的收集进度素材。恒发数组不发 null。
+	if ctx.Sess.Srv != nil && ctx.Sess.Srv.DB != nil {
+		decks, err := ctx.Sess.Srv.buildCardDeckArray(ctx.Sess.Srv.dbCtx(), uid)
+		if err != nil {
+			ctx.Log.Warn("24/18 卡组数组构造失败", "uid", uid, "err", err)
+			decks = proto.Args(proto.S("340"))
+		}
+		if decks == nil {
+			decks = proto.Args(proto.S("340"))
+		}
+		values[9] = decks
+	}
+	inner := wiregen.MustMakeObj("feaidppnpch", values)
 	outer, err := bytesWrappedObject(inner, ctx.Sess.Table())
 	if err != nil {
 		ctx.Log.Error("24/18 档案编码失败", "uid", uid, "err", err)

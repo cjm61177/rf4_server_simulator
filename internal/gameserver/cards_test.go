@@ -299,3 +299,104 @@ func TestFishingEndSettleCardFieldEmptyWithoutDrop(t *testing.T) {
 		t.Fatalf("无卡时 801.f8 应为空 61 数组: tree=%v", items)
 	}
 }
+
+// TestSocialProfileCarriesCardDecks 收藏册数据链：24/18 档案聚合（2003
+// feaidppnpch）的 f9 必须带卡组数组（args code 340），有卡的卡组 f1>0 且
+// f0 卡树齐全，空卡组 f1==0。
+func TestSocialProfileCarriesCardDecks(t *testing.T) {
+	srv, db := newDetachTestServer(t)
+	registerSocialHandlers(srv.dispatch)
+	sess := recoveryLogin(t, srv, 883)
+	ctx := context.Background()
+	deck := cardTestDeckDef(t, db)
+	if len(deck.Cards) < 2 {
+		t.Fatalf("测试卡组 %s 卡数不足", cardTestDeck)
+	}
+	for _, c := range deck.Cards[:2] {
+		if _, err := srv.grantCard(ctx, recoveryUID, strings.TrimPrefix(c, cardItemIDPrefix)); err != nil {
+			t.Fatalf("发卡 %s: %v", c, err)
+		}
+	}
+	var deckNumID int64
+	if err := db.SQL.QueryRowContext(ctx,
+		`SELECT numeric_id FROM item_def WHERE item_id=?`, cardTestDeck).Scan(&deckNumID); err != nil {
+		t.Fatal(err)
+	}
+
+	h := srv.dispatch.lookup(24, 18)
+	if h == nil {
+		t.Fatal("24/18 未注册")
+	}
+	body, handled := h(&Ctx{Sess: sess, Main: 24, Sub: 18,
+		Tree: proto.Args524(proto.U32(uint32(recoveryUID))), DecodeOK: true, ExpectResponse: true,
+		Log: logging.Discard()})
+	if !handled || len(body) == 0 {
+		t.Fatal("24/18 未处理")
+	}
+	v, _, err := proto.DecodeValue(body, 0, srv.Table())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := decodeWrappedBytes(t, v)
+	if inner.Class != "feaidppnpch" {
+		t.Fatalf("24/18 聚合类错误: %s", inner.Class)
+	}
+	f9 := inner.Field(9)
+	decks := f9.Tree()
+	if decks == nil || decks.ArgCodeStr() != "340" || decks.ArgCount() == 0 {
+		t.Fatalf("f9 应为非空 340 卡组数组: tree=%v", decks)
+	}
+	var target, empty *proto.Value
+	for i := 0; i < decks.ArgCount(); i++ {
+		dk := decks.ArgItem(i)
+		if dk.Class != "ckfmndabaei" {
+			t.Fatalf("f9[%d] 类错误: %s", i, dk.Class)
+		}
+		if n := dk.Field(5); n.Num == nil || int64(*n.Num) != deckNumID {
+			continue
+		}
+		target = dk
+	}
+	if target == nil {
+		t.Fatalf("f9 里没找到 %s（numeric_id=%d）", cardTestDeck, deckNumID)
+	}
+	cardsF := target.Field(0)
+	cards := cardsF.Tree()
+	if cards == nil || cards.ArgCodeStr() != "61" || cards.ArgCount() != 2 {
+		t.Fatalf("目标卡组 f0 应含 2 棵卡树: tree=%v", cards)
+	}
+	for i := 0; i < cards.ArgCount(); i++ {
+		if cls := cards.ArgItem(i).Class; cls != "dapkdcghfmg" {
+			t.Fatalf("卡树元素类错误: %s", cls)
+		}
+	}
+	if started := target.Field(1); started.Num == nil || *started.Num == 0 {
+		t.Fatalf("有卡卡组 f1 mkkhpfgnjei 应 >0: %+v", started.Num)
+	}
+	if guid := target.Field(2); guid.Hex == "" {
+		t.Fatalf("卡组实例 guid（f2）缺失")
+	}
+	// 未开始收集的卡组：f1==0、f0 空 61 数组。（卡组清单跨组可能共享卡，
+	// 必须按 f0 实际为空来选，不能只看 numeric id 不同。）
+	for i := 0; i < decks.ArgCount(); i++ {
+		dk := decks.ArgItem(i)
+		if n := dk.Field(5); n.Num != nil && int64(*n.Num) == deckNumID {
+			continue
+		}
+		f0 := dk.Field(0)
+		if tr := f0.Tree(); tr == nil || tr.ArgCount() == 0 {
+			empty = dk
+			break
+		}
+	}
+	if empty == nil {
+		t.Fatal("静态库应有多于一个卡组")
+	}
+	if started := empty.Field(1); started.Num == nil || *started.Num != 0 {
+		t.Fatalf("空卡组 f1 应为 0: %+v", started.Num)
+	}
+	emptyF := empty.Field(0)
+	if cards := emptyF.Tree(); cards == nil || cards.ArgCodeStr() != "61" || cards.ArgCount() != 0 {
+		t.Fatalf("空卡组 f0 应为空 61 数组: tree=%v", cards)
+	}
+}

@@ -484,6 +484,28 @@ func (d *DB) ListItemDefsByCategory(ctx context.Context, category int64) ([]*Ite
 	return out, rows.Err()
 }
 
+// ListItemsByItemIDPrefix 取玩家某 item_id 前缀的全部物品行（收藏卡 card_* 用）。
+func (d *DB) ListItemsByItemIDPrefix(ctx context.Context, uid int64, prefix string) ([]*Item, error) {
+	rows, err := d.SQL.QueryContext(ctx,
+		`SELECT `+itemCols+` FROM item WHERE uid=? AND item_id LIKE ? ORDER BY created_ts`,
+		uid, prefix+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*Item
+	for rows.Next() {
+		it := &Item{}
+		if err := rows.Scan(&it.GUID, &it.UID, &it.ItemID, &it.NumericID, &it.WireClass,
+			&it.TypeID, &it.Container, &it.Slot, &it.RigGUID, &it.Qty, &it.BuyPrice,
+			&it.FieldsJSON, &it.Durability, &it.Workmanship, &it.CreatedTS); err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
 // GetItemByGUID 取单个物品行。
 func (d *DB) GetItemByGUID(ctx context.Context, guid string) (*Item, error) {
 	row := d.SQL.QueryRowContext(ctx, `SELECT `+itemCols+` FROM item WHERE guid=?`, guid)
