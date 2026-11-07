@@ -211,6 +211,23 @@ func (d *DB) KeepnetGet(ctx context.Context, uid int64, echoGUID string) (*Keepn
 	return e, nil
 }
 
+// KeepnetGetTx KeepnetGet 的事务版：标本制作等需要在同一事务内
+// "读取-校验-消费"鱼护条目时使用。
+func (d *DB) KeepnetGetTx(ctx context.Context, tx *sql.Tx, uid int64, echoGUID string) (*KeepnetEntry, error) {
+	row := tx.QueryRowContext(ctx, `
+		SELECT echo_guid, uid, COALESCE(species,''), COALESCE(name_zh,''), weight_g, length_m,
+		       cat, COALESCE(keep_loc,''), COALESCE(keep_spot,0), COALESCE(keep_bait,''),
+		       COALESCE(keep_level,''), COALESCE(ts,0)
+		FROM keepnet_items WHERE uid=? AND echo_guid=?`, uid, echoGUID)
+	e := &KeepnetEntry{}
+	err := row.Scan(&e.EchoGUID, &e.UID, &e.Species, &e.NameZh, &e.WeightG, &e.LengthM,
+		&e.Cat, &e.KeepLoc, &e.KeepSpot, &e.KeepBait, &e.KeepLevel, &e.TS)
+	if err != nil {
+		return nil, err
+	}
+	return e, nil
+}
+
 // KeepnetDelete 卖鱼出护。
 func (d *DB) KeepnetDelete(ctx context.Context, uid int64, echoGUIDs []string) error {
 	if len(echoGUIDs) == 0 {
@@ -268,7 +285,10 @@ func (d *DB) CatchLogTotals(ctx context.Context, uid int64) (total, trophy, supe
 
 // ---- 地点买断 ----
 
-// PlaceAccessList 玩家已买断地点（档案 307 f22）。
+// PlaceAccessList 玩家已买断地点（档案 307 f22 与 placeOwned 买断判断同源）。
+// 只含 kind='buyout'：房屋走 HouseAccessList 进 f20（客户端据 f20 把已购
+// 房屋显示为"进入"），f22 一律渲染成"永久买断"——混入房屋会让仅有房契的
+// 玩家在地图上呈现买断态，也污染买断判断与地图免费准入（审查 P2）。
 func (d *DB) PlaceAccessList(ctx context.Context, uid int64) ([]string, error) {
 	rows, err := d.SQL.QueryContext(ctx, `SELECT place FROM place_access WHERE uid=? AND kind='buyout'`, uid)
 	if err != nil {
@@ -280,6 +300,9 @@ func (d *DB) PlaceAccessList(ctx context.Context, uid int64) ([]string, error) {
 		var p string
 		if err := rows.Scan(&p); err != nil {
 			return nil, err
+		}
+		if p == "" {
+			continue
 		}
 		out = append(out, p)
 	}

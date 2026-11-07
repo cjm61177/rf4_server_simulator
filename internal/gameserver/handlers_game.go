@@ -3,6 +3,7 @@ package gameserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"time"
@@ -23,7 +24,8 @@ func hProfile(ctx *Ctx) ([]byte, bool) {
 	if !ctx.Sess.Srv.requireDB(ctx) {
 		return nil, false
 	}
-	p, err := ctx.Sess.Srv.BuildProfile307(ctx.Sess.pushCtx(), ctx.Sess.Userid)
+	p, err := ctx.Sess.Srv.BuildProfile307W(ctx.Sess.pushCtx(), ctx.Sess.Userid,
+		worldTotalGameMin(time.Now()))
 	if err != nil {
 		ctx.Log.Warn("3/1 构造失败", "err", err)
 		return nil, false
@@ -208,6 +210,7 @@ func hSkillsGet(ctx *Ctx) ([]byte, bool) {
 	}
 	tree, err := srv.BuildSkillTree311(ctx.Sess.pushCtx(), ctx.Sess.Userid, ^uint64(0))
 	if err != nil {
+		ctx.Log.Error("技能树构建失败（回兜底空包会卡客户端登录）", "err", err)
 		return nil, false
 	}
 	body, err := proto.EncodeValue(tree, ctx.Sess.Table())
@@ -370,7 +373,7 @@ func hPlaceBuyout(ctx *Ctx) ([]byte, bool) {
 		ctx.Log.Info("3/37 价格与静态表不符，不扣款", "place", place,
 			"packet", packet, "price", price, "tiers", tiers)
 	}
-	p, err := srv.BuildProfile307(cctx, uid)
+	p, err := srv.BuildProfile307W(cctx, uid, worldTotalGameMin(time.Now()))
 	if err != nil {
 		ctx.Log.Warn("3/37 档案构造失败", "err", err)
 		return nil, false
@@ -425,7 +428,7 @@ func hPlace(ctx *Ctx) ([]byte, bool) {
 	}
 	key = travelLevelKey(key)
 	nowUnix := time.Now().Unix()
-	body, err := ctx.Sess.Srv.buildMapDobBody(key, nowUnix)
+	body, err := ctx.Sess.Srv.buildMapDobBody(ctx.Sess.Userid, key, nowUnix)
 	if err != nil {
 		ctx.Log.Warn("1/12 dob 构造失败", "level", key, "err", err)
 		return nil, false
@@ -434,8 +437,92 @@ func hPlace(ctx *Ctx) ([]byte, bool) {
 	return body, true
 }
 
+// settleTravel 在响应体构造成功后，把「同图判定、免费资格、银币扣款、流水、
+// 位置写回」放进同一个数据库事务：任一步失败整体回滚，不会出现已扣旅费却
+// 仍在原地图的状态。charge=false 用于 1/13 空请求的登录恢复（不收费）。
+//
+// 返回 charged（本次是否实际扣款，决定是否需要 2/1 刷新档案）和 ok；ok=false
+// 时已回业务错误，调用方必须中止切图。事务内先取得 profile 写锁再读当前地图，
+// 并发的重复切图因此串行执行，后一个请求能看到前一个已提交的位置而不重复扣款。
+func settleTravel(ctx *Ctx, level, scene string, spot int64, charge bool) (charged, ok bool) {
+	srv := ctx.Sess.Srv
+	uid := ctx.Sess.Userid
+	cctx := ctx.Sess.pushCtx()
+	cost := int64(0)
+	if charge {
+		cost = placeTravelCost(level)
+	}
+
+	tx, err := beginEconomyTx(cctx, srv.DB)
+	if err != nil {
+		ctx.Log.Warn("切图开启事务失败", "level", level, "err", err)
+		ctx.ReplyFailure("System.InvalidOperationException", "切图结算失败，请重试")
+		return false, false
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 先取写锁：DEFERRED 事务不能在读完旧位置后再升级，也不能让两个并发
+	// 切图都基于同一份旧位置各自扣款。
+	if _, err := tx.ExecContext(cctx, `UPDATE profile SET uid=uid WHERE uid=?`, uid); err != nil {
+		ctx.Log.Warn("切图锁定玩家档案失败", "level", level, "err", err)
+		ctx.ReplyFailure("System.InvalidOperationException", "切图结算失败，请重试")
+		return false, false
+	}
+	if err := ensureProfileTx(cctx, tx, uid); err != nil {
+		ctx.Log.Warn("切图建立玩家档案失败", "level", level, "err", err)
+		ctx.ReplyFailure("System.InvalidOperationException", "切图结算失败，请重试")
+		return false, false
+	}
+	var current string
+	if err := tx.QueryRowContext(cctx,
+		`SELECT COALESCE(last_level_key,'') FROM profile WHERE uid=?`, uid).Scan(&current); err != nil {
+		ctx.Log.Warn("切图读取当前地图失败", "level", level, "err", err)
+		ctx.ReplyFailure("System.InvalidOperationException", "切图结算失败，请重试")
+		return false, false
+	}
+	sameLevel := travelLevelKey(current) == level
+
+	if cost > 0 && !sameLevel {
+		free, err := hasFreeTravelAccessTx(cctx, tx, uid, level)
+		if err != nil {
+			ctx.Log.Warn("切图免费通行判定失败", "level", level, "err", err)
+			ctx.ReplyFailure("System.InvalidOperationException", "切图结算失败，请重试")
+			return false, false
+		}
+		if !free {
+			if err := applyWalletTx(cctx, tx, uid, -cost, 0,
+				"buy", level, "", "place_travel"); err != nil {
+				if errors.Is(err, errInsufficientFunds) {
+					ctx.Log.Info("切图银币不足，不切图", "level", level, "cost", cost)
+					ctx.ReplyFailure("System.InvalidOperationException", "银币不足，无法前往该水域")
+				} else {
+					ctx.Log.Warn("切图银币扣款失败", "level", level, "err", err)
+					ctx.ReplyFailure("System.InvalidOperationException", "切图结算失败，请重试")
+				}
+				return false, false
+			}
+			charged = true
+		}
+	}
+	if err := srv.DB.SetPlayerLocationTx(cctx, tx, uid, level, scene, spot); err != nil {
+		ctx.Log.Warn("切图位置落库失败，扣款已回滚", "level", level, "err", err)
+		ctx.ReplyFailure("System.InvalidOperationException", "切图结算失败，请重试")
+		return false, false
+	}
+	if err := tx.Commit(); err != nil {
+		ctx.Log.Warn("切图事务提交失败，扣款已回滚", "level", level, "err", err)
+		ctx.ReplyFailure("System.InvalidOperationException", "切图结算失败，请重试")
+		return false, false
+	}
+	if charged {
+		ctx.Log.Info("切图扣银币", "level", level, "silver", -cost)
+	}
+	return charged, true
+}
+
 // hTravel 处理 1/14 切图，返回 [dob(205), 护网快照(800), 玩家档案(307), null]。
-// 地图解锁由客户端的档案字段决定；本处理器负责切换当前地图和返回场景数据。
+// 先预构造响应体（构造失败不结算），再把扣款、流水和位置写回放进同一事务；
+// 提交成功后重新构造 307，使响应中的余额与实扣一致。
 func hTravel(ctx *Ctx) ([]byte, bool) {
 	if !ctx.Sess.Srv.requireDB(ctx) {
 		return nil, false
@@ -448,24 +535,45 @@ func hTravel(ctx *Ctx) ([]byte, bool) {
 	}
 	key = travelLevelKey(key)
 	sess := ctx.Sess
+	// 凭证地图不再在入口一律拒绝：settleTravel 在同一事务内判断有效
+	// trip/buyout/house 是否免票；无有效凭证时按普通切图费收费，余额不足
+	// 则整体回滚。这样票到期后可以重新付费进入，也不会无扣款绕过切图结算。
 	nowUnix := time.Now().Unix()
+	// 预构造只用于确认响应可用，避免扣款后才暴露构造失败。
 	body, err := sess.Srv.buildTravelBodyAt(sess, key, nowUnix)
 	if err != nil {
 		ctx.Log.Warn("1/14 travel 构造失败", "level", key, "err", err)
 		return nil, false
 	}
-	// 响应体成功构造后才提交位置，避免构造失败时把玩家记录已切图。
 	scene := sceneForLevel(key)
 	var spot int64
 	if ints := treeIntsDeep(ctx.Tree); len(ints) > 0 {
 		spot = int64(ints[0])
 	}
-	if err := sess.Srv.DB.SetPlayerLocation(sess.pushCtx(), sess.Userid, key, scene, spot); err != nil {
-		ctx.Log.Warn("1/14 位置落库失败", "level", key, "err", err)
-		return nil, false
+	charged, ok := settleTravel(ctx, key, scene, spot, true)
+	if !ok {
+		return nil, true
+	}
+	if charged {
+		// 307 必须反映实扣后的余额；重新构造是只读的，不会再改状态。极端
+		// 情况下构造失败时仍返回预构造响应，且切图已成功，才用 2/1 刷新档案。
+		if fresh, err := sess.Srv.buildTravelBodyAt(sess, key, nowUnix); err == nil {
+			body = fresh
+		} else {
+			ctx.Log.Warn("1/14 扣款后档案构造失败，改用 2/1 刷新", "level", key, "err", err)
+			sess.Push2_1()
+		}
 	}
 	sess.Srv.setLevel(sess.Userid, key)
 	sess.rememberWeather(key, nowUnix)
+	// 兼容旧存档：只对 last_consume_ts=0 的历史已购行补启表；新购票已在
+	// 3/38 购买事务中启表。
+	if sess.Srv.startTripTimers(sess.pushCtx(), sess.Userid, key) {
+		sess.Push2_1()
+	}
+	// 装备包与地图同步：进入有效钓鱼游地图发放，切离的地图回收
+	// （官方生命周期"进图发放/离图回收"，见 trip_equip.go）。
+	sess.Srv.syncTripEquipment(sess.pushCtx(), sess.Userid, key)
 	ctx.Log.Info("1/14 travel", "level", key, "scene", scene, "spot", spot)
 	return body, true
 }
@@ -492,8 +600,10 @@ func hEnterMap(ctx *Ctx) ([]byte, bool) {
 		level, scene, spot = saved.LevelKey, saved.Scene, saved.Spot
 	}
 
-	// 1/13 若带地图 key，则以本次进入作为一次成功切图；空请求是登录恢复。
-	if requested != "" {
+	// 1/13 若带地图 key，则以本次进入作为一次成功切图；空请求是登录恢复，
+	// 只写回位置、不收旅费。
+	charge := requested != ""
+	if charge {
 		level = travelLevelKey(requested)
 		scene = sceneForLevel(level)
 	}
@@ -501,19 +611,35 @@ func hEnterMap(ctx *Ctx) ([]byte, bool) {
 	if scene == "" {
 		scene = sceneForLevel(level)
 	}
+	// 钓鱼游/买断已失效的付费地图不能作为出生地图（钓鱼游到期即失去
+	// 进入资格），回退出生地图，避免到期后重连仍留在原地图。
+	if srv.tripLevelLocked(sess.pushCtx(), uid, level) {
+		ctx.Log.Info("1/13 目标地图无有效钓鱼游，回出生地图", "level", level)
+		level, scene, spot = spawnLevelKey, sceneForLevel(spawnLevelKey), 0
+	}
 
 	nowUnix := time.Now().Unix()
-	body, err := srv.buildSpawnLocatorBody(level, scene, nowUnix)
+	body, err := srv.buildSpawnLocatorBody(uid, level, scene, nowUnix)
 	if err != nil {
 		ctx.Log.Warn("1/13 出生点定位构造失败", "level", level, "err", err)
 		return nil, false
 	}
-	if err := srv.DB.SetPlayerLocation(sess.pushCtx(), uid, level, scene, spot); err != nil {
-		ctx.Log.Warn("1/13 位置落库失败", "level", level, "err", err)
-		return nil, false
+	charged, ok := settleTravel(ctx, level, scene, spot, charge)
+	if !ok {
+		return nil, true
+	}
+	if charged {
+		// 1/13 的 206 响应不含档案；切图事务提交成功后才推送 2/1 刷新余额。
+		sess.Push2_1()
 	}
 	srv.setLevel(uid, level)
 	sess.rememberWeather(level, nowUnix)
+	// 兼容旧存档：重登时补启 last_consume_ts=0 的历史已购行。
+	if srv.startTripTimers(sess.pushCtx(), uid, level) {
+		sess.Push2_1()
+	}
+	// 装备包与地图同步：落点=有效钓鱼游地图 → 发放；其他地图残留 → 回收。
+	srv.syncTripEquipment(sess.pushCtx(), uid, level)
 	ctx.Log.Info("1/13 下发出生地图", "level", level, "scene", scene, "spot", spot, "bytes", len(body))
 	return body, true
 }
@@ -640,8 +766,23 @@ func hCastPrepare(ctx *Ctx) ([]byte, bool) {
 	if !srv.pendingCatchAllowsCast(ctx, st) {
 		return nil, true
 	}
+	reelSetting, hasReelSetting := srv.rodReelDragSetting(ctx.Sess.pushCtx(), gear)
 	st.mu.Lock()
 	st.GearGuid = gear
+	if hasReelSetting {
+		st.ReelSetting = reelSetting
+	}
+	if rigTypeLureFamily[st.RigType] {
+		st.LureMotionMask = 0
+		st.LureAction = ""
+		st.LureLayer = .5
+		st.LurePulseCount = 0
+		st.LurePulseAt = time.Time{}
+		st.LureToggleCount = 0
+		st.LureToggleAt = time.Time{}
+		st.LureStateAt = time.Time{}
+		st.LureLayerAt = time.Time{}
+	}
 	depthCM := st.DepthCM
 	rigType := st.RigType
 	st.mu.Unlock()
@@ -684,6 +825,22 @@ func hCastPrepare(ctx *Ctx) ([]byte, bool) {
 		}
 		return nil, false
 	}
+	// 轮子耐久归零即损坏，但它不像断竿那样从手上消失，客户端仍会发 14/1。
+	// 这里必须拦住，否则损坏的轮子还能继续抛投上鱼。
+	// 不清 GearGuid：竿确实还在手上，留着它 14/2 才能回出"请先修理"的提示。
+	if reelGUID := srv.rigBrokenReelGUID(ctx.Sess.pushCtx(), ctx.Sess.Userid, gear); reelGUID != "" {
+		ctx.Log.Info("14/1 被拒：渔线轮已损坏", "rod", shortGUID(gear), "reel", shortGUID(reelGUID))
+		if body := castReady158(ctx, "", depthCM, 0); body != nil {
+			return body, true
+		}
+		return nil, false
+	}
+
+	// 海杆的 Rod 实例由 4/22 竿线全量树构建；普通纺车杆通常已从库存树
+	// 实例化。海杆没有该对象时，客户端的 RUILoadIndicator 会一直显示 0。
+	if srv.tunableF("marine_full_sync", 0) != 0 && marineRigType(rigType) {
+		ctx.Sess.Push4_22Full()
+	}
 
 	body := castReady158(ctx, gear, depthCM, rigType)
 	if body == nil {
@@ -697,7 +854,9 @@ func hCast(ctx *Ctx) ([]byte, bool) {
 	if !srv.requireDB(ctx) {
 		return nil, false
 	}
-	// loc/spot：顶层 obj olieodeoaof 第一个非空 str = loc，第二个 u32 = spot
+	// loc/spot：顶层 obj olieodeoaof 第一个非空 str = loc，第二个 u32 存 spot。
+	// 协议注释里该槽典型取值是 0..16 的 float（按 U32 承载位型），
+	// 不能确认是钓点编号，判鱼不再拿它去对攻略点位；海图区号改用抛竿落点定位。
 	guids := deepGUIDs(ctx.Tree)
 	gear := ""
 	if len(guids) > 0 {
@@ -753,6 +912,12 @@ func hCast(ctx *Ctx) ([]byte, bool) {
 		st.mu.Unlock()
 		ctx.Log.Info("14/2 被拒：装备限制", "rod", shortGUID(gear), "reason", reason)
 		ctx.ReplyOperationResult(136) // kOperationResult_WrongRegion
+		return nil, true
+	}
+	// 14/1 给的是力度上限，客户端被拒后仍可能直发 14/2，这里再拦一道。
+	if reelGUID := srv.rigBrokenReelGUID(ctx.Sess.pushCtx(), ctx.Sess.Userid, gear); reelGUID != "" {
+		ctx.Log.Info("14/2 被拒：渔线轮已损坏", "rod", shortGUID(gear), "reel", shortGUID(reelGUID))
+		ctx.ReplyFailure("System.InvalidOperationException", "渔线轮已损坏，请先修理")
 		return nil, true
 	}
 	// 14/1 给出的是满力度上限；14/2 才携带本次实际落点、动作和出手力度。
@@ -939,6 +1104,16 @@ func hFishingStep(ctx *Ctx) ([]byte, bool) {
 			}
 			changed := anim != st.LastAnim
 			st.LastAnim = anim
+			previousMask := st.LureMotionMask
+			st.LureMotionMask = anim
+			if rigTypeLureFamily[st.RigType] {
+				now := time.Now()
+				if anim != previousMask || st.LureLayerAt.IsZero() || now.Sub(st.LureLayerAt) >= 1500*time.Millisecond {
+					st.LureLayer = lureLayerFromMotion(anim, st.LureLayer)
+					st.LureLayerAt = now
+				}
+				st.updateLureActionLocked(now, previousMask, anim)
+			}
 			// 0x200/0x400/0x800/0x1000 是不同水层与姿态的“在水中”位族；岸上不会出现。
 			enterWater := false
 			needBite := false
@@ -968,7 +1143,12 @@ func hFishingStep(ctx *Ctx) ([]byte, bool) {
 			}
 			// 14/7 每帧都会发送，仅在动画位变化时记录日志。
 			if changed {
-				ctx.Log.Info("14/7 钓组动画位", "f5", fmt.Sprintf("0x%X", anim))
+				stateAgeMS := time.Since(st.LureStateAt).Milliseconds()
+				ctx.Log.Info("14/7 钓组动画位", "f5", fmt.Sprintf("0x%X", anim),
+					"mask", fmt.Sprintf("0x%X", anim&lureMotionStatusMask),
+					"action", st.LureAction, "layer", st.LureLayer,
+					"layer_cm", st.effectiveBaitDepthCMLocked(time.Now()),
+					"speed", st.ReelSetting, "state_age_ms", stateAgeMS)
 			}
 		}
 	}
@@ -987,8 +1167,38 @@ func hFishingFall(ctx *Ctx) ([]byte, bool) {
 func hFishingPull(ctx *Ctx) ([]byte, bool) {
 	// 14/9 fishing/pull：纺车杆的"抬杆"（右键）与"小刺"（Ctrl+右键）。
 	// 客户端在本地播放杆梢动作，这条命令是 fire-and-forget 通知，不需要回包。
-	// 先原样记录请求体，便于确认两种手势的参数差异。
-	ctx.Log.Info("14/9 抬杆/小刺", "len", len(ctx.Body), "hex", traceHexHead(ctx.Body, 96))
+	// 海钓使用 Pull 作为实际刺鱼入口，不一定另发普通钓法的 14/11；收到鱼后若只记录
+	// 这条命令，客户端永远得不到 14/15 挂钩确认，表现为不能抬竿且没有力度条。
+	srv := ctx.Sess.Srv
+	st := srv.stateFor(ctx.Sess.Userid)
+	st.mu.Lock()
+	pending, gear, rigType := st.Pending, st.GearGuid, st.RigType
+	if rigTypeLureFamily[rigType] {
+		st.recordLurePulseLocked(time.Now())
+	}
+	confirm := marineRigType(rigType) && pending != nil && st.CastActive && !st.Resolved && !st.Hooked
+	if confirm {
+		st.Hooked = true
+	}
+	st.mu.Unlock()
+	if confirm {
+		if err := srv.consumeHookedBait(ctx.Sess, pending, gear); err != nil {
+			ctx.Log.Warn("海钓抬竿后鱼饵扣减失败", "fish", pending.FishGUID, "err", err)
+		}
+		bound := false
+		if ctx.Sess.marineHookConfirm() {
+			bound = ctx.Sess.Push14_15(gear, pending.FishGUID)
+		} else if !ctx.Sess.marineHookItemSync() {
+			ctx.Log.Info("14/9 海钓抬竿只走真服 14/11 路径，跳过 14/15/4/22")
+		}
+		if ctx.Sess.marineHookItemSync() {
+			ctx.Sess.Push4_22Hook()
+		}
+		ctx.Log.Info("14/9 海钓抬竿确认", "rod", shortGUID(gear), "fish", shortGUID(pending.FishGUID),
+			"rig_type", rigType, "14/15", bound)
+	} else {
+		ctx.Log.Info("14/9 抬杆/小刺", "len", len(ctx.Body), "hex", traceHexHead(ctx.Body, 96), "rig_type", rigType)
+	}
 	return nil, true
 }
 
@@ -996,12 +1206,19 @@ func hFishingHooked(ctx *Ctx) ([]byte, bool) {
 	srv := ctx.Sess.Srv
 	st := srv.stateFor(ctx.Sess.Userid)
 	st.mu.Lock()
+	wasHooked := st.Hooked
 	st.Hooked = true
 	pending := st.Pending
 	gear := st.GearGuid
+	rigType := st.RigType
 	castActive := st.CastActive
 	resolved := st.Resolved
 	st.mu.Unlock()
+	fishGUID, species := "", ""
+	if pending != nil {
+		fishGUID, species = pending.FishGUID, pending.Species
+	}
+	ctx.Log.Info("14/11 中鱼", "fish", shortGUID(fishGUID), "species", species, "was_hooked", wasHooked)
 	if pending != nil {
 		if err := srv.consumeHookedBait(ctx.Sess, pending, gear); err != nil {
 			ctx.Log.Warn("中鱼后鱼饵扣减失败", "fish", pending.FishGUID, "err", err)
@@ -1013,13 +1230,28 @@ func hFishingHooked(ctx *Ctx) ([]byte, bool) {
 	if pending == nil && !resolved && castActive {
 		srv.scheduleBiteForHooked(ctx.Sess, st)
 	}
-	ctx.Sess.Push4_22Hook()
+	if pending != nil && marineRigType(rigType) && !wasHooked {
+		if !ctx.Sess.marineHookConfirm() {
+			if !ctx.Sess.marineHookItemSync() {
+				ctx.Log.Info("14/11 只走真服已证实路径，跳过 14/15/4/22")
+			}
+		} else {
+			ctx.Sess.Push14_15(gear, pending.FishGUID)
+		}
+		if ctx.Sess.marineHookItemSync() {
+			ctx.Sess.Push4_22Hook()
+		}
+	} else {
+		ctx.Sess.Push4_22Hook()
+	}
 	return nil, true
 }
 
 func hFishingLeft(ctx *Ctx) ([]byte, bool) {
 	// 14/12 的 f0 是客户端鱼实体状态变化：
-	//   f0=3/5/6：客户端因钓组状态拒收鱼实体，保留当前鱼并延迟重推；
+	//   f0=3/5：客户端因钓组状态拒收鱼实体，保留当前鱼并延迟重推；
+	//   f0=6：鱼实体已经进入当前钓组，等待玩家刺鱼；不能重推或清 Hooked，
+	//          否则海钓会每 6 秒重复生成同一尾鱼并锁住右键抬竿。
 	//   f0=1/2/8：当前鱼未中钩离场；钓组仍在水中时重新等待下一尾；
 	//   其他：保守按本轮没有鱼处理。
 	srv := ctx.Sess.Srv
@@ -1032,14 +1264,28 @@ func hFishingLeft(ctx *Ctx) ([]byte, bool) {
 	}
 	st.mu.Lock()
 	ctx.Log.Info("14/12 鱼状态", "f0", f0)
-	if f0 == 3 || f0 == 5 || f0 == 6 {
+	if f0 == 6 {
+		st.cancelPendingTimerLocked()
+		st.PushSent = true
+		st.mu.Unlock()
+		return nil, true
+	}
+	if f0 == 3 || f0 == 5 {
 		// 客户端尚未接收鱼实体：保留当前鱼，延迟重推同一尾，
 		// 不能把不兼容的钓组状态误当成鱼已离场。
 		st.cancelBiteTimerLocked()
 		st.PushSent = false
 		st.Hooked = false
-		if st.CastActive && st.Pending != nil {
+		st.PendingRepush++
+		if st.PendingRepush <= maxPendingRepush && st.CastActive && st.Pending != nil {
 			srv.armPendingTimerLocked(ctx.Sess.Userid, st, 6*time.Second)
+		} else {
+			// 连续拒收说明当前钓组状态与鱼实体不兼容；继续重推只会每 6 秒
+			// 重新刷一次鱼。放弃这尾鱼，等玩家重新抛竿。
+			ctx.Log.Info("14/12 连续拒收鱼实体，停止重推", "f0", f0, "retries", maxPendingRepush)
+			st.Pending = nil
+			st.PendingRepush = 0
+			st.Resolved = true
 		}
 		st.mu.Unlock()
 		return nil, true

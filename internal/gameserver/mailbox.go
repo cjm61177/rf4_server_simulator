@@ -480,12 +480,30 @@ func (s *Server) acceptMails(ctx *Ctx, ids []int64) (int, []*store.Item) {
 				return 0, nil
 			}
 			for _, att := range attachments {
-				var it *store.Item
-				if m.AttachmentSnapshotVersion > 0 {
-					if !att.HasItemSnapshot() {
-						ctx.Log.Warn("19/3 附件快照不完整", "mail", id, "item", att.ItemID)
+				if m.AttachmentSnapshotVersion > 0 && !att.HasItemSnapshot() {
+					ctx.Log.Warn("19/3 附件快照不完整", "mail", id, "item", att.ItemID)
+					return 0, nil
+				}
+				def, derr := s.DB.GetItemDefByItemID(cctx, att.ItemID)
+				if derr != nil || def == nil {
+					ctx.Log.Warn("19/3 附件定义不存在", "mail", id, "item", att.ItemID, "err", derr)
+					return 0, nil
+				}
+				if def.Category == bundleCategory {
+					if att.BuyPrice != 0 {
+						ctx.Log.Warn("19/3 组合包有购买价值，需人工处理", "mail", id, "item", att.ItemID)
 						return 0, nil
 					}
+					items, berr := s.prepareBundleItems(cctx, uid, att.ItemID, "backpack", att.Qty)
+					if berr != nil {
+						ctx.Log.Warn("19/3 组合包展开失败", "mail", id, "item", att.ItemID, "err", berr)
+						return 0, nil
+					}
+					plan.prepared = append(plan.prepared, items...)
+					continue
+				}
+				var it *store.Item
+				if m.AttachmentSnapshotVersion > 0 {
 					it, err = s.prepareMailSnapshotItem(cctx, uid, att)
 					if err != nil {
 						ctx.Log.Warn("19/3 附件快照重建失败", "mail", id, "item", att.ItemID, "err", err)
@@ -496,11 +514,6 @@ func (s *Server) acceptMails(ctx *Ctx, ids []int64) (int, []*store.Item) {
 					qty := att.Qty
 					if qty < 1 {
 						qty = 1
-					}
-					def, derr := s.DB.GetItemDefByItemID(cctx, att.ItemID)
-					if derr != nil || def == nil {
-						ctx.Log.Warn("19/3 附件定义不存在", "mail", id, "item", att.ItemID, "err", derr)
-						return 0, nil
 					}
 					guid := ""
 					if !countableCategories[def.Category] && isHex32(att.GUID) {
@@ -844,6 +857,9 @@ func (s *Server) execAdminCmd(cmd *AdminCommand) {
 		s.tunMu.Lock()
 		s.tunCache = nil // 强制下次读取刷新
 		s.tunMu.Unlock()
+		if err := s.reloadFishEcologyCache(s.dbCtx()); err != nil {
+			s.log.Warn("鱼种生态缓存刷新失败", "err", err)
+		}
 		s.log.Info("管理指令：运行参数已刷新")
 	case "fish_tv_test":
 		// 鱼汛通道探测：向指定玩家（0=全部在线会话）推送一条测试消息。

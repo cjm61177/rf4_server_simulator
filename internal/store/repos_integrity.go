@@ -23,7 +23,7 @@ var PlayerTables = []string{
 	"catch_log", "competition", "competition_member", "competition_result", "named_fish", "place_access",
 	"fishing_state", "item_damage_log", "membership_order", "reel_performance", "cafe_order", "cafe_order_completion",
 	"player_condition", "campfire_state", "happy_hour_state",
-	"drink_bonus_clock", "drink_bonus_effect",
+	"drink_bonus_clock", "drink_bonus_effect", "trip_state", "trip_grant",
 }
 
 // RuntimeTables 是运营/运行时/迁移元数据表，不属于静态资料或玩家存档。
@@ -32,6 +32,7 @@ var RuntimeTables = []string{
 	"kv", "admin_queue", "achievement_def", "static_dataset_meta", "schema_migrations",
 	"request_receipts", "market_offer", "shop_item_override",
 	"fish_weight_override", "fish_bite_setting", "fish_grade_lines", "skill_link",
+	"fish_ecology", "skill_fish_effect_def",
 }
 
 // TableOwnership 返回每张用户表的唯一归属。静态、玩家、运行时三组必须互不相交。

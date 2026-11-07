@@ -153,20 +153,44 @@ func hDynamicRodBreak(ctx *Ctx) ([]byte, bool) {
 			}
 			ctx.Log.Info("17/9 渔具超载", "rod", shortGUID(rodGUID), "part", outcome.BreakPart,
 				"broken", shortGUID(outcome.BrokenGUID), "line", outcome.LineBroken,
-				"comp", outcome.ComponentBroken,
+				"comp", outcome.ComponentBroken, "reel_broken", outcome.ReelBroken,
 				"line_loss_m", outcome.LineLossM, "removed", len(outcome.RemovedGUIDs))
-			// 断件会改变竿耐久和装配状态，需要全量同步刷新客户端物品模型。
+			// 断件会改变竿/轮的耐久与装配状态，需要全量同步刷新客户端物品模型。
 			// 断竿时配件只是摘回背包，11028 的移除清单会让客户端先删掉本地模型，
 			// 所以刷新必须排在回包之后，否则配件要到重登才重新出现。
+			// 轮子只掉耐久、不进移除清单：不把 BrokenGUID 一并推过去的话，
+			// 客户端缓存停在旧耐久，玩家看不到"损坏"。
 			syncGUIDs := append([]string(nil), outcome.RemovedGUIDs...)
-			ctx.AfterResponse(func() { ctx.Sess.Push4_22Items(syncGUIDs) })
+			if g := strings.TrimSpace(outcome.BrokenGUID); g != "" {
+				syncGUIDs = append(syncGUIDs, g)
+			}
+			reelBroken := outcome.ReelBroken
+			frictionWorn := outcome.FrictionWorn
+			ctx.AfterResponse(func() {
+				ctx.Sess.Push4_22Items(syncGUIDs)
+				switch {
+				case reelBroken:
+					// 轮子本体耐久归零，整体损坏。
+					ctx.Sess.pushSystemChat("渔线轮已损坏，请到工坊修理后再使用")
+				case frictionWorn:
+					// 摩擦片磨穿、泄力失效，本体没坏，换摩擦片即可。
+					ctx.Sess.pushSystemChat("摩擦片磨穿、泄力失效，请到工坊更换摩擦片")
+				}
+			})
 			// 断件必丢鱼：11028 只表达装备损坏，另经聊天频道提示跑鱼。
 			reason := "断竿"
 			switch {
 			case outcome.ComponentBroken:
 				reason = "钓组组件断裂"
-			case outcome.ReelDamaged:
+			case outcome.ReelBroken:
+				// 轮子本体磨穿，真坏了。
 				reason = "渔线轮超载"
+			case outcome.FrictionWorn:
+				// 摩擦片磨穿、泄力失效：鱼借线跑了，轮子本体没坏。
+				reason = "泄力失效"
+			case outcome.ReelDamaged:
+				// 泄力打滑：鱼借线跑了，摩擦片只是轻微磨损。
+				reason = "泄力打滑"
 			case outcome.LineBroken && outcome.BreakPart == "leader":
 				reason = "断子线"
 			case outcome.LineBroken:
@@ -237,15 +261,16 @@ func hRodCutLine(ctx *Ctx) ([]byte, bool) {
 		st.mu.Unlock()
 	}
 	st.mu.Lock()
+	inWater := st.CastActive || st.InWater
 	pending := st.Pending
 	st.mu.Unlock()
 	if rodGUID == "" || rodGUID == zeroGUID {
 		ctx.Log.Warn("17/10 剪线被拒：没有在手的鱼竿", "cut_m", cutM)
 		return snapshot()
 	}
-	// 剪线必须上报正数米数；零米请求不应清空整套钩组。
-	if cutM <= 0 {
-		ctx.Log.Info("17/10 剪线被拒：放线米数无效", "rod", shortGUID(rodGUID), "cut_m", cutM)
+	// 没有放线时不接受剪线：客户端误触也不该把整套钩组清空。
+	if cutM <= 0 && !inWater {
+		ctx.Log.Info("17/10 剪线被拒：当前没有放线", "rod", shortGUID(rodGUID))
 		return snapshot()
 	}
 	outcome, err := srv.cutLineTx(ctx.Sess.pushCtx(), ctx.Sess.Userid, rodGUID, cutM)
