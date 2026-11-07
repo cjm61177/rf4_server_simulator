@@ -383,6 +383,20 @@ func (s *Server) fishingEndSettle(ctx *Ctx) ([]byte, bool) {
 	if hasFish && profileTree != nil {
 		f7 = profileTree
 	}
+	// f8 = 本次获得物品（解码端 iingicaldbk/pbhkmflbgfb 同源双赋值）。结算弹窗的
+	// 卡牌 stack item 从该数组筛 ipdpoaiekem（blehdkolhfl.aokkbgjcdfg），掉卡时
+	// 放入与 4/22 同一棵卡树；恒发数组不发 null（803 挖饵同款先例）。
+	f8 := proto.Args(proto.S("61"))
+	if hasFish && res != nil && res.cardGUID != "" {
+		cardRow, cerr := s.DB.GetItemByGUID(cctx, res.cardGUID)
+		if cerr != nil || cardRow == nil {
+			ctx.Log.Warn("结算弹卡取卡行失败", "guid", shortGUID(res.cardGUID), "err", cerr)
+		} else if tree, terr := s.ItemToTree(cctx, cardRow); terr != nil || tree == nil {
+			ctx.Log.Warn("结算弹卡构树失败", "guid", shortGUID(res.cardGUID), "err", terr)
+		} else {
+			f8 = proto.Args(proto.S("61"), tree)
+		}
+	}
 	obj801, err := wiregen.MakeObj("caagocpofin", map[int]*proto.Value{
 		0:  f0,
 		1:  proto.U32(s.castDistanceBitsForRig(cctx, uid, gearGUID, rigType)),
@@ -392,7 +406,7 @@ func (s *Server) fishingEndSettle(ctx *Ctx) ([]byte, bool) {
 		5:  proto.Null(),
 		6:  f6,
 		7:  f7,
-		8:  proto.Null(),
+		8:  f8,
 		9:  proto.Args(proto.S("61")),
 		10: proto.Null(),
 	})

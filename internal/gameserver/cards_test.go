@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"rf4server/internal/logging"
+	"rf4server/internal/proto"
 	"rf4server/internal/store"
 )
 
@@ -258,5 +259,43 @@ func TestFishingEndSettleGrantsCard(t *testing.T) {
 	}
 	if n := cardItemCount(t, db, recoveryUID, "card_perch"); n != 1 {
 		t.Fatalf("14/4 结算未发卡: %d", n)
+	}
+	// 801.f8 是结算弹窗卡牌素材（iingicaldbk 筛 ipdpoaiekem），必须带卡树。
+	dec, _, err := proto.DecodeValue(body, 0, srv.Table())
+	if err != nil || dec.Class != "caagocpofin" {
+		t.Fatalf("14/4 应回 801: %v %s", err, dec.Class)
+	}
+	f8 := dec.Field(8)
+	items := f8.Tree()
+	if items == nil || items.ArgCodeStr() != "61" || items.ArgCount() != 1 {
+		t.Fatalf("801.f8 掉卡时应含 1 张卡: code=%s count=%d nil=%v",
+			items.ArgCodeStr(), items.ArgCount(), items == nil)
+	}
+	if cls := items.ArgItem(0).Class; cls != "dapkdcghfmg" {
+		t.Fatalf("801.f8 元素应为卡 wire 类 dapkdcghfmg: %s", cls)
+	}
+}
+
+func TestFishingEndSettleCardFieldEmptyWithoutDrop(t *testing.T) {
+	srv, _ := newDetachTestServer(t)
+	sess := recoveryLogin(t, srv, 882)
+	st := srv.fishingState(recoveryUID)
+	st.mu.Lock()
+	st.Pending = cardTestFish("64646464646464646464646464646464", "perch")
+	st.CastActive, st.Hooked, st.Resolved = true, true, false
+	st.mu.Unlock()
+	body, handled := srv.fishingEndSettle(&Ctx{Sess: sess, Main: 14, Sub: 4, Log: logging.Discard()})
+	if !handled || len(body) == 0 {
+		t.Fatal("14/4 未完成结算")
+	}
+	// 默认掉率 0：f8 恒发空数组（code 61），不发 null。
+	dec, _, err := proto.DecodeValue(body, 0, srv.Table())
+	if err != nil || dec.Class != "caagocpofin" {
+		t.Fatalf("14/4 应回 801: %v %s", err, dec.Class)
+	}
+	f8 := dec.Field(8)
+	items := f8.Tree()
+	if items == nil || items.ArgCodeStr() != "61" || items.ArgCount() != 0 {
+		t.Fatalf("无卡时 801.f8 应为空 61 数组: tree=%v", items)
 	}
 }

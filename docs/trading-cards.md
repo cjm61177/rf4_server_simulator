@@ -71,4 +71,5 @@
 ## 待确认点
 
 - 官方掉率不公开，社区资料也缺；分层几率是自定数值。
-- 结算画面如何把卡归到"本次钓获"（成绩条目物品数组的填充来源是深状态链 `llgjfoldbcc`/`emifcdomieb`，未追到底）。已核实 813 结算对象 `ndiejnnioni` 只有 f0~f9 十个字段、无物品数组（`tables.go:689`）——弹卡显示走的是客户端从背包状态自取，实现后需实测确认"结算响应后推 4/22 新卡"是否足够触发弹出与音效。
+- ~~结算画面如何把卡归到"本次钓获"~~ **已实锤（2026-11-07）**：弹卡素材在 **14/4 响应（801 `caagocpofin`/`deocnichdpi`）的 f8**，不是 4/22、也不是背包自取（813 里确实没有物品数组，但 801 尾部有）。证据链：解码序 `caagocpofin.plphdfehkjl` 逐字段读入 `deocnichdpi`，**f8 读一个 `onobdmohahp[]` 同时赋给基类 `pcnefbpgdhl.iingicaldbk`(0x18) 与 `pbhkmflbgfb`(0x20)**；成绩条目构造器 `blehdkolhfl(Guid, deocnichdpi, …)` 里 `jbffbmpfefo = npfmlpeemdi.iingicaldbk`；卡 getter `blehdkolhfl.aokkbgjcdfg` = `jbffbmpfefo` 里 `FirstOrDefault(is ipdpoaiekem)`；结算弹窗 `RUIPlayerProgressModernWidget` 持成绩条目调 `kjkpjnjdahl()` 取卡包 `acbfpofoiip` 建 `stack_item_tcard`。服务端已改：f8 恒发 `Args("61")` 数组（803 挖饵同款先例），掉卡时放入与 4/22 同一棵卡树。801.f9 实为 `Guid[]`（`iaimladeglm`），我们发空 `Args("61")` 恰好兼容。f4（`plhpmhpadcg[]` 进度条目，弹窗 XP/技能进度素材）与 f5（`mocgolkdmnh[]`）仍发 null——客户端实测容忍，811/未知元素的 args code 未核实，不动。
+- 收藏册数据源仍未实锤：卡组对象（11304 `ckfmndabaei` 内嵌卡数组 `imdcjllgdcn.mjbciidhldo`）的本地玩家下发通道疑似走 Steam/metagame HTTP 层（`bbpmdcodcee.emdpofibkkg(uid,…)` 二进制反序列化出 `lnhgjpfnhhi`，f9=`kiflcpfmehe` 卡组数组），不是游戏 socket 的已知命令。`ddkpcmhdfdb.okfkcnfnppo`（读卡组数组）在还原源码里没有 UI 消费者，链路断了。待实机进收藏册界面抓包/看请求再定。
