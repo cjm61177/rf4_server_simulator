@@ -121,6 +121,15 @@ var categoryWireClass = map[int64]wireClassEntry{
 	78: {"dapkdcghfmg", 11301}, // case 76 ipdpoaiekem
 	80: {"ipdakkbfoja", 13301}, // 技能书（客户端按 wrapper 承载书目配置）
 	81: {"kbpmmclfipg", 1470},  // 渔轮电机（装在轮 f14 扩展槽，DTO odlknjlbooh）
+	// 卡组收藏册（tcdeck_*，cat 82）：实例类 ckfmndabaei/11304（DTO
+	// imdcjllgdcn : oekmgkganbg<phjbhljooid> : onobdmohahp，即卡组=背包物品，
+	// f0 mjbciidhldo 内嵌该组已收集卡的完整树数组 args(61)，f1
+	// mkkhpfgnjei>0 客户端才视为"已开始收集"）。独立收藏册界面
+	// （RUITradingCardDecksExplorerPanel）的行 VM mailhgoence/进度 provider
+	// dceidcbplaf 全部从库存物品事件取数——不走 24/18 档案聚合（rf4_hook
+	// 三轮硬件断点实证：Profile 族唯一拉取入口 ddkpcmhdfdb.hmdfmpmnaem
+	// 全程零命中，行渲染 73 次正常但 imdcjllgdcn 物品事件从未到达）。
+	82: {"ckfmndabaei", 11304},
 }
 
 const fallbackWireClass = "ohciikgjghe"

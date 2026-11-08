@@ -3,6 +3,8 @@ package gameserver
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"rf4server/internal/proto"
 	"rf4server/internal/store"
@@ -16,6 +18,25 @@ func nativeInventoryContainers(kind uint64) []string {
 		return []string{fmt.Sprintf("native:%d", kind)}
 	}
 	return nil
+}
+
+// patchNativeContainer 容器枚举 wire 字段（mfllbndghhe/csSlotEnum）以 DB
+// 容器列回填发送副本：行存储不持久化该字段（启动修复 RepairItemPhysics 恒
+// 清零，见 prepareNewCard 注释），但客户端谓词按它判断——右键出售要容器
+// ==18 且未指派（RUITradingCardCell，2026-11-08 逆向）。仅 native:<枚举>
+// 容器（17/18）需要；backpack 等命名容器官方语义未证，不动。keepnet 树
+// fields[18] 回填 containerKeepnet 是同款先例。
+func patchNativeContainer(row *store.Item, tree *proto.Value) {
+	if row == nil || tree == nil || !strings.HasPrefix(row.Container, "native:") {
+		return
+	}
+	n, err := strconv.ParseUint(strings.TrimPrefix(row.Container, "native:"), 10, 8)
+	if err != nil {
+		return
+	}
+	if idx := fieldIdxByCS(row.WireClass, csSlotEnum); idx >= 0 && idx < len(tree.Fields) {
+		tree.Fields[idx].Num = ptrU64(n)
+	}
 }
 
 // 导入快照保留渔获资料，容器和版本以当前护网为准。

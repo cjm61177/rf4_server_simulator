@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"rf4server/internal/proto"
-	"rf4server/internal/wiregen"
 )
 
 // world 命令族（25/27/29）和背包变动命令（4/6-4/8）。
@@ -44,11 +43,15 @@ func (s *Server) rigSnapshot800(ctx *Ctx) []byte {
 }
 
 func registerWorldHandlers(d *Dispatch) {
-	// 27/x RemoteSettings：返回容器快照，27/4 返回空集合。
-	d.Register(27, 1, hWorldSnapshot)
-	d.Register(27, 2, hWorldSnapshot)
-	d.Register(27, 3, hWorldSnapshot)
-	d.Register(27, 4, hWorldRemoteSettingsEmpty)
+	// 27/x 集换式卡牌 RPC（客户端收藏册服务 bbpmdcodcee，main=27 反汇编实锤
+	// 见 cards_rpc.go）：27/1 卖卡(Guid[],long)、27/2 指派(string,Guid,Guid)、
+	// 27/3 摘卡(Guid)、27/4 塑封卡组(Guid)→llgjfoldbcc/809 奖励回执。旧实现
+	// 当 RemoteSettings 回容器快照——客户端成功回调无视响应体但服务端无操作
+	// （假成功：弹已售金额/卡不动，2026-11-07 实机）；27/4 空壳同理升级。
+	d.Register(27, 1, hCardSell)
+	d.Register(27, 2, hCardAssign)
+	d.Register(27, 3, hCardRemove)
+	d.Register(27, 4, hCardLaminate)
 	// 25/x 船只与燃料：返回容器快照。
 	d.Register(25, 1, hWorldSnapshot)
 	d.Register(25, 2, hWorldSnapshot)
@@ -75,23 +78,10 @@ func hWorldSnapshot(ctx *Ctx) ([]byte, bool) {
 	return ctx.Sess.Srv.rigSnapshot800(ctx), true
 }
 
-func hWorldRemoteSettingsEmpty(ctx *Ctx) ([]byte, bool) {
-	obj := wiregen.MustMakeObj("gglppphenoi", map[int]*proto.Value{
-		0: proto.Null(),
-		1: proto.Null(),
-		2: proto.Null(),
-		3: proto.Null(),
-	})
-	body, err := proto.EncodeValue(obj, ctx.Sess.Table())
-	if err != nil {
-		return nil, false
-	}
-	return body, true
-}
-
 func hWorldNull(ctx *Ctx) ([]byte, bool) {
 	return []byte{0x00}, true
 }
+
 
 // hItemMove 4/6：guids + [源容器, 目标容器] → 移动 → 回快照。
 func hItemMove(ctx *Ctx) ([]byte, bool) {

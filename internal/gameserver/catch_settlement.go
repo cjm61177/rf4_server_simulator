@@ -156,13 +156,19 @@ func (s *Server) settleCatchOnce(ctx context.Context, uid int64, f *RolledFish, 
 		return nil, err
 	}
 	// 掉卡准备在事务外（静态库查询纪律，同 craft_ops）；事务内只入库。
-	// 掉卡失败不影响结算本身，降级为不产卡。
+	// 掉卡失败不影响结算本身，降级为不产卡。卡组物品（收藏册数据源）
+	// 同在事务外重建：extra 带上本次新卡，保证嵌进 f0 的卡树含本张。
 	var cardItem *store.Item
+	var deckPlan *deckSyncPlan
+	var deckGUIDs []string
 	if s.rollCardDrop(ctx, f) {
 		cardItem, err = s.prepareNewCard(ctx, uid, f)
 		if err != nil {
 			s.log.Warn("掉卡构造失败，本次不产卡", "uid", uid, "fish", shortGUID(f.FishGUID), "err", err)
 			cardItem = nil
+		} else if deckPlan, err = s.prepareDeckItems(ctx, uid, cardItem); err != nil {
+			s.log.Warn("卡组同步计划构造失败，收藏册本张暂不可见", "uid", uid, "err", err)
+			deckPlan = nil
 		}
 	}
 	if sess := s.liveSessionByUID(uid); sess != nil {
@@ -268,12 +274,20 @@ func (s *Server) settleCatchOnce(ctx context.Context, uid int64, f *RolledFish, 
 	}
 	// 掉卡入库（事务内，与经验/磨损同一事务提交）：卡 guid 进回执，
 	// 重放结算时凭回执去重，绝不二次发卡。入库失败降级为不产卡。
+	// 卡组物品（收藏册数据源）同事务重建；guid 带出给 4/22 推送。
 	if cardItem != nil {
 		granted, _, err := grantPreparedItemTx(ctx, tx, cardItem, false)
 		if err != nil {
 			s.log.Warn("掉卡入库失败，本次不产卡", "uid", uid, "err", err)
 		} else {
 			r.CardGUID = granted.GUID
+			if err := syncDeckItemsTx(ctx, tx, uid, deckPlan); err != nil {
+				s.log.Warn("卡组同步计划落地失败，收藏册暂不更新", "uid", uid, "err", err)
+			} else {
+				for _, d := range deckPlan.Decks {
+					deckGUIDs = append(deckGUIDs, d.GUID)
+				}
+			}
 		}
 	}
 	raw, err := json.Marshal(r)
@@ -286,5 +300,7 @@ func (s *Server) settleCatchOnce(ctx context.Context, uid int64, f *RolledFish, 
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return r.result(false), nil
+	res := r.result(false)
+	res.deckGUIDs = deckGUIDs
+	return res, nil
 }

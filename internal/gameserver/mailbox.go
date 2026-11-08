@@ -750,8 +750,10 @@ func (s *Server) execAdminCmd(cmd *AdminCommand) {
 		}
 	case "grant_item":
 		// 卡牌走专用路径：f0 需嵌渔获快照，普通 prepareNewItem 产空白卡。
+		// 卡组物品（收藏册数据源）随卡重建，一并推送。
 		if strings.HasPrefix(cmd.ItemID, cardItemIDPrefix) {
-			s.pushItemGUIDs(cmd.UID, s.adminGrantCardQueue(ctx, cmd.UID, cmd.ItemID, cmd.Qty))
+			guids := s.adminGrantCardQueue(ctx, cmd.UID, cmd.ItemID, cmd.Qty)
+			s.pushItemGUIDs(cmd.UID, append(guids, s.deckItemGUIDs(ctx, cmd.UID)...))
 			break
 		}
 		row, _, err := s.AddToStack(ctx, cmd.UID, cmd.ItemID, "backpack", cmd.Qty)
@@ -762,7 +764,8 @@ func (s *Server) execAdminCmd(cmd *AdminCommand) {
 			s.log.Info("管理指令：发物品", "uid", cmd.UID, "item", cmd.ItemID, "qty", cmd.Qty)
 		}
 	case "grant_deck":
-		s.pushItemGUIDs(cmd.UID, s.adminGrantDeckQueue(ctx, cmd.UID, cmd.DeckID))
+		guids := s.adminGrantDeckQueue(ctx, cmd.UID, cmd.DeckID)
+		s.pushItemGUIDs(cmd.UID, append(guids, s.deckItemGUIDs(ctx, cmd.UID)...))
 	case "delete_item":
 		deleted := make([]string, 0, len(cmd.GUIDs))
 		for _, guid := range cmd.GUIDs {
@@ -926,6 +929,7 @@ func (s *Server) pushItemUpdate(uid int64, row *store.Item) {
 	if err != nil {
 		return
 	}
+	patchNativeContainer(row, tree) // native 容器行（收藏册 18）补 wire 枚举
 	for _, sess := range s.sessionsForUID(uid) {
 		sess.Push(4, 22, proto.Args(proto.S("61"), tree))
 	}

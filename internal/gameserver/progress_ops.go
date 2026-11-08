@@ -34,6 +34,7 @@ type settleXpResult struct {
 	skillID      int64   // 310.f2 钓法大类（1 浮钓 / 2 纺车 / 3 底钓 / 11 海钓）
 	skillGain    float64 // 310.f3 本次实际熟练度增量
 	cardGUID     string  // 本次结算掉落的卡牌 guid（空=未掉卡；回执重放时原样带出）
+	deckGUIDs    []string // 本次重建的卡组物品 guid（收藏册数据源；仅首次结算产生）
 }
 
 // grantXpMonotonic 增加累计经验并重算等级，保证等级不下降。
@@ -427,17 +428,24 @@ func (s *Server) fishingEndSettle(ctx *Ctx) ([]byte, bool) {
 	if hasFish && !res.replayed {
 		ctx.Sess.Push2_1()
 	}
-	// 掉卡后补查卡组奖座（独立短事务，幂等）；新卡与奖座一并经 4/22
-	// 同步给客户端。回执重放也会走到这里：凭 guid 重推，不会重复发放。
+	// 掉卡后补查卡组奖座（独立短事务，幂等）；卡/卡组经全量先删后推重同步
+	// 给客户端。卡牌列表视图的重建滞后一个事件代且同帧推送会被合并成一次
+	// 重建（2026-11-08 实机：同批双发无效；第二条鱼的推送才让第一条的卡
+	// 可见）——因此第二代重同步延迟 600ms 跨帧发出，重建读到第一代终态，
+	// 新卡结算后立即可见。回执重放也会走到这里：重同步幂等，不会重复发放。
 	if hasFish && res != nil && res.cardGUID != "" {
-		deckGuids, derr := s.checkCardDecks(cctx, uid, cardItemIDPrefix+pending.Species)
-		if derr != nil {
+		if deckGuids, derr := s.checkCardDecks(cctx, uid, cardItemIDPrefix+pending.Species); derr != nil {
 			ctx.Log.Warn("卡组检查失败", "uid", uid, "err", derr)
+		} else {
+			for _, g := range deckGuids {
+				if row, gerr := s.DB.GetItemByGUID(cctx, g); gerr == nil && row != nil {
+					s.pushItemUpdate(uid, row)
+				}
+			}
 		}
-		guids := make([]string, 0, 1+len(deckGuids))
-		guids = append(guids, res.cardGUID)
-		guids = append(guids, deckGuids...)
-		ctx.Sess.Push4_22ItemGUIDs(guids)
+		s.pushCardAlbumResync(ctx.Sess, uid)
+		sess := ctx.Sess
+		time.AfterFunc(600*time.Millisecond, func() { sess.pushCardAlbumResync(uid) })
 	}
 	// 收竿时补挂同种库存，供客户端校验下一次抛竿；搏鱼中不补挂。
 	// 补挂后的钓组和背包数量在 801 响应发送后同步，避免结算覆盖数量更新。

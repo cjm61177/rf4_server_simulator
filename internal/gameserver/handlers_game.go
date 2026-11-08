@@ -161,6 +161,9 @@ func hItemDetails(ctx *Ctx) ([]byte, bool) {
 			if err != nil {
 				continue
 			}
+			// 登录时收藏册卡/卡组树必须带容器枚举 18：右键出售、添加弹框等
+			// 客户端谓词按该字段过滤（2026-11-08 实机：f3=0 → 右键恒灰）
+			patchNativeContainer(row, tree)
 			out.Items = append(out.Items, tree)
 		}
 	}

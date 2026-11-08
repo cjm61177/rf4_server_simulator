@@ -104,6 +104,27 @@ func TestPrepareNewCardEmbedsFishSnapshot(t *testing.T) {
 	if derived == strings.ToLower(fish.FishGUID) || !strings.Contains(card.FieldsJSON, derived) {
 		t.Fatalf("内嵌鱼 guid 未按卡 guid 派生（与鱼护同 guid 会串标本）: derived=%s", derived)
 	}
+	// 卡行必须与卡组行同柜（收藏册容器 18）：卡牌页窗口 lagfnoohjip 用
+	// 容器 18 管理器按静态类别 78 过滤，卡行放 backpack 则卡牌页恒空
+	// （2026-11-07 实机两页症状的根因，详见 cards.go prepareNewCard）。
+	if card.Container != tcDeckContainer {
+		t.Fatalf("卡行应在收藏册容器 %s: got=%s", tcDeckContainer, card.Container)
+	}
+	// wire f3 容器枚举不写：启动修复 RepairItemPhysics →
+	// canonicalizeItemPhysicalFields 恒清零根物品 csSlotEnum（rig 时代规则），
+	// 写 18 活不过下次重启；归柜真源=DB 行 container 列（上面已断言）。
+	// 新卡=自由卡，f13 dbgaheblmei 不打 bit4：bit4=已收集进卡组标记，
+	// 自由卡带位时卡牌页多选/右键出售全部置灰（2026-11-07 实机），见
+	// cards.go prepareNewCard 注释。
+	if flags := fields[fieldIdxByCS("dapkdcghfmg", "dbgaheblmei")]; flags.Num != nil && *flags.Num&0x10 != 0 {
+		t.Fatalf("自由卡 f13 dbgaheblmei 不应置 bit4(0x10): got=%v", *flags.Num)
+	}
+	// f2 odflendafcg 父 guid 必须留空：自由卡谓词 bedifiidhhf.pmibgafefdf
+	// = !efhaepoijno()（父空=自由卡可售），父非空=已归属卡组、出售键恒灰
+	// （2026-11-07 实机）。卡组归属由卡组行 f0 内嵌卡树承载，见 cards.go。
+	if parent := fields[fieldIdxByCS("dapkdcghfmg", "odflendafcg")]; parent.Hex != "" {
+		t.Fatalf("卡 f2 父 guid 应留空（自由卡可售）: got=%q", parent.Hex)
+	}
 }
 
 func TestCatchSettlementGrantsCardOnceAndReplayDoesNot(t *testing.T) {
@@ -301,8 +322,9 @@ func TestFishingEndSettleCardFieldEmptyWithoutDrop(t *testing.T) {
 }
 
 // TestSocialProfileCarriesCardDecks 收藏册数据链：24/18 档案聚合（2003
-// feaidppnpch）的 f9 必须带卡组数组（args code 340），有卡的卡组 f1>0 且
-// f0 卡树齐全，空卡组 f1==0。
+// feaidppnpch）的 f9 必须带卡组数组（args code 364），有卡卡组 f0 卡树
+// 齐全；f1 mkkhpfgnjei（塑封时间戳）恒 0——>0 且 f0 非空=客户端判
+// 「已塑封」，收集中不得写（见 cards.go prepareDeckItems/buildCardDeckArray）。
 func TestSocialProfileCarriesCardDecks(t *testing.T) {
 	srv, db := newDetachTestServer(t)
 	registerSocialHandlers(srv.dispatch)
@@ -343,8 +365,8 @@ func TestSocialProfileCarriesCardDecks(t *testing.T) {
 	}
 	f9 := inner.Field(9)
 	decks := f9.Tree()
-	if decks == nil || decks.ArgCodeStr() != "340" || decks.ArgCount() == 0 {
-		t.Fatalf("f9 应为非空 340 卡组数组: tree=%v", decks)
+	if decks == nil || decks.ArgCodeStr() != "364" || decks.ArgCount() == 0 {
+		t.Fatalf("f9 应为非空 364 卡组数组: tree=%v", decks)
 	}
 	var target, empty *proto.Value
 	for i := 0; i < decks.ArgCount(); i++ {
@@ -362,16 +384,18 @@ func TestSocialProfileCarriesCardDecks(t *testing.T) {
 	}
 	cardsF := target.Field(0)
 	cards := cardsF.Tree()
-	if cards == nil || cards.ArgCodeStr() != "61" || cards.ArgCount() != 2 {
-		t.Fatalf("目标卡组 f0 应含 2 棵卡树: tree=%v", cards)
+	if cards == nil || cards.ArgCodeStr() != "362" || cards.ArgCount() != 2 {
+		t.Fatalf("目标卡组 f0 应为 args 362 类型化卡数组且含 2 棵卡树: tree=%v", cards)
 	}
 	for i := 0; i < cards.ArgCount(); i++ {
 		if cls := cards.ArgItem(i).Class; cls != "dapkdcghfmg" {
 			t.Fatalf("卡树元素类错误: %s", cls)
 		}
 	}
-	if started := target.Field(1); started.Num == nil || *started.Num == 0 {
-		t.Fatalf("有卡卡组 f1 mkkhpfgnjei 应 >0: %+v", started.Num)
+	// f1 塑封时间戳收集中恒 0：>0+f0 非空 → 客户端 eekechidjae()=true 判
+	// 「已塑封」并锁编辑（2026-11-07 实机「还没集齐就显示已塑封」根因）。
+	if started := target.Field(1); started.Num == nil || *started.Num != 0 {
+		t.Fatalf("有卡卡组 f1 mkkhpfgnjei 收集中应为 0: %+v", started.Num)
 	}
 	if guid := target.Field(2); guid.Hex == "" {
 		t.Fatalf("卡组实例 guid（f2）缺失")
@@ -396,7 +420,232 @@ func TestSocialProfileCarriesCardDecks(t *testing.T) {
 		t.Fatalf("空卡组 f1 应为 0: %+v", started.Num)
 	}
 	emptyF := empty.Field(0)
-	if cards := emptyF.Tree(); cards == nil || cards.ArgCodeStr() != "61" || cards.ArgCount() != 0 {
-		t.Fatalf("空卡组 f0 应为空 61 数组: tree=%v", cards)
+	if cards := emptyF.Tree(); cards == nil || cards.ArgCodeStr() != "362" || cards.ArgCount() != 0 {
+		t.Fatalf("空卡组 f0 应为空 362 数组: tree=%v", cards)
+	}
+}
+
+// TestGrantCardCreatesDeckItem 收藏册真链（2026-11-07 hook 实证）：独立
+// 收藏册界面从库存 tcdeck_* 物品取数（mailhgoence/dceidcbplaf 消费
+// imdcjllgdcn 物品事件），不走 24/18。官方语义（2026-11-08 改）：发卡只落
+// 卡牌列表（自由卡），不自动建卡组物品；玩家 27/2 手动指派后才有卡组行：
+// wire 类 ckfmndabaei/11304，f0 内嵌该组卡树，f1 恒 0（收集中，>0=塑封），
+// guid 派生幂等；被指派副本带 f2=卡组 guid + bit4。
+func TestGrantCardCreatesDeckItem(t *testing.T) {
+	srv, db := newDetachTestServer(t)
+	ctx := context.Background()
+	uid := recoveryUID
+	if _, err := db.EnsureProfile(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	card, err := srv.grantCard(ctx, uid, "carp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 未指派：无卡组物品行（新卡留在卡牌列表）
+	if rows, err := db.ListItemsByItemIDPrefix(ctx, uid, "tcdeck_"); err != nil || len(rows) != 0 {
+		t.Fatalf("未指派不应建卡组物品: %d 行 err=%v", len(rows), err)
+	}
+	// 手动指派 → 卡组物品行出现
+	asCtx, _ := cardRPCCtx(t, srv, 2, assignBody(cardTestDeck, deckItemGUID(uid, cardTestDeck), card.GUID))
+	if body, handled := hCardAssign(asCtx); !handled || len(body) == 0 {
+		t.Fatal("指派应回 ACK")
+	}
+	rows, err := db.ListItemsByItemIDPrefix(ctx, uid, "tcdeck_")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ItemID != cardTestDeck {
+		t.Fatalf("指派后应恰好建 1 个对应卡组物品: %d 行", len(rows))
+	}
+	d := rows[0]
+	if d.WireClass != "ckfmndabaei" || d.TypeID != 11304 {
+		t.Fatalf("卡组物品 wire 类错误: class=%s type=%d want ckfmndabaei/11304", d.WireClass, d.TypeID)
+	}
+	if d.Container != tcDeckContainer {
+		t.Fatalf("卡组物品应在收藏册容器 %s: got=%s", tcDeckContainer, d.Container)
+	}
+	if want := deckItemGUID(uid, cardTestDeck); d.GUID != want {
+		t.Fatalf("卡组物品 guid 未按 uuid5 派生: got=%s want=%s", d.GUID, want)
+	}
+	fields, err := FieldsFromJSON(d.FieldsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deck := cardTestDeckDef(t, db)
+	f0 := fields[fieldIdxByCS("ckfmndabaei", "mjbciidhldo")]
+	if f0.Val == nil || f0.Val.ArgCodeStr() != "362" || f0.Val.ArgCount() != 1 {
+		t.Fatalf("卡组 f0 应内嵌 1 棵卡树（args 362 类型化卡数组）: code=%v n=%d", f0.Val, func() int {
+			if f0.Val == nil {
+				return -1
+			}
+			return f0.Val.ArgCount()
+		}())
+	}
+	// f1 塑封时间戳收集中恒 0（>0+f0 非空=客户端判已塑封，同上）。
+	if started := fields[fieldIdxByCS("ckfmndabaei", "mkkhpfgnjei")]; started.Num == nil || *started.Num != 0 {
+		t.Fatal("卡组 f1 mkkhpfgnjei 收集中应为 0")
+	}
+	// f14 dbgaheblmei bit4（0x10）：客户端容器快照谓词 afkieinjcnb 的放行位，
+	// 不置则卡组物品进不了快照、Guid 事件不广播，收藏册收不到（详见 cards.go）。
+	if flags := fields[fieldIdxByCS("ckfmndabaei", "dbgaheblmei")]; flags.Num == nil || *flags.Num&0x10 == 0 {
+		t.Fatalf("卡组 f14 dbgaheblmei 应置 bit4(0x10): got=%v", flags.Num)
+	}
+	// wire 容器字段 f4 不写：同卡行 f3——启动修复恒清零该 BYTE，归柜真源
+	// =DB 行 container 列（上面已断言）。
+	if numID := fields[fieldIdxByCS("ckfmndabaei", csNumericID)]; numID.Num == nil || int64(*numID.Num) == 0 {
+		t.Fatal("卡组 f5 数字 id（def numeric_id）缺失")
+	}
+	// 组内其它卡未持有：不产生其它卡组物品行（静态库多卡组）。
+	if n := cardItemCount(t, db, uid, "tcdeck_float"); n != 0 {
+		t.Fatalf("无卡卡组不应建物品行: tcdeck_float x%d", n)
+	}
+	_ = deck
+	// 首张副本被指派进卡组（官方语义：收集中的槽位渲染要求
+	// parent==卡组 guid、bit4=已收集标记；见 cards.go prepareDeckItems）。
+	cards, err := db.ListItemsByItemIDPrefix(ctx, uid, cardItemIDPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) != 1 {
+		t.Fatalf("应恰好 1 张卡行: %d", len(cards))
+	}
+	cfields, err := FieldsFromJSON(cards[0].FieldsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent := cfields[fieldIdxByCS("dapkdcghfmg", "odflendafcg")]; parent.Hex != strings.ToLower(d.GUID) {
+		t.Fatalf("卡 f2 应=卡组实例 guid（指派进卡组）: got=%q want=%s", parent.Hex, strings.ToLower(d.GUID))
+	}
+	if flags := cfields[fieldIdxByCS("dapkdcghfmg", "dbgaheblmei")]; flags.Num == nil || *flags.Num&0x10 == 0 {
+		t.Fatalf("被指派卡 f13 应置 bit4(0x10): got=%v", flags.Num)
+	}
+}
+
+// TestSyncDeckItemsRebuildIsIdempotent 重复发卡组内卡 + 手动指派一张：卡组
+// 物品恒为一行（同 guid DELETE+INSERT 重建），卡行两副本都入库，f0 卡树
+// 每物种只嵌被指派的一张（卡组槽位=物种格，去重理由见 cards.go）。
+func TestSyncDeckItemsRebuildIsIdempotent(t *testing.T) {
+	srv, db := newDetachTestServer(t)
+	ctx := context.Background()
+	uid := recoveryUID
+	if _, err := db.EnsureProfile(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	var first *store.Item
+	for i := 0; i < 2; i++ {
+		card, err := srv.grantCard(ctx, uid, "carp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i == 0 {
+			first = card
+		}
+	}
+	if n := cardItemCount(t, db, uid, "card_carp"); n != 2 {
+		t.Fatalf("两次发卡应入库 2 张卡行: %d", n)
+	}
+	// 官方语义：只有玩家手动指派的副本进组（最早一张），其余自由
+	asCtx, _ := cardRPCCtx(t, srv, 2, assignBody(cardTestDeck, deckItemGUID(uid, cardTestDeck), first.GUID))
+	if body, handled := hCardAssign(asCtx); !handled || len(body) == 0 {
+		t.Fatal("指派应回 ACK")
+	}
+	rows, err := db.ListItemsByItemIDPrefix(ctx, uid, "tcdeck_")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("指派后卡组物品应恰为 1 行: %d", len(rows))
+	}
+	fields, err := FieldsFromJSON(rows[0].FieldsJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f0 := fields[fieldIdxByCS("ckfmndabaei", "mjbciidhldo")]
+	if f0.Val == nil || f0.Val.ArgCount() != 1 {
+		t.Fatalf("卡组 f0 每物种应只嵌 1 棵卡树（去重）: %v", f0.Val)
+	}
+	// 两副本归属态：被指派一张带 f2=卡组 guid+bit4，另一张保持自由
+	// （f2 空、无 bit4）供卡牌页出售。
+	cards, err := db.ListItemsByItemIDPrefix(ctx, uid, cardItemIDPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) != 2 {
+		t.Fatalf("应恰好 2 张卡行: %d", len(cards))
+	}
+	for _, c := range cards {
+		cf, cerr := FieldsFromJSON(c.FieldsJSON)
+		if cerr != nil {
+			t.Fatal(cerr)
+		}
+		parent := cf[fieldIdxByCS("dapkdcghfmg", "odflendafcg")]
+		flags := cf[fieldIdxByCS("dapkdcghfmg", "dbgaheblmei")]
+		if c.GUID == first.GUID {
+			if parent.Hex == "" || flags.Num == nil || *flags.Num&0x10 == 0 {
+				t.Fatalf("被指派副本应带父 guid+bit4: parent=%q flags=%v", parent.Hex, flags.Num)
+			}
+		} else if parent.Hex != "" || (flags.Num != nil && *flags.Num&0x10 != 0) {
+			t.Fatalf("未指派副本应为自由卡: parent=%q flags=%v", parent.Hex, flags.Num)
+		}
+	}
+	// 卡全部移除后重建：卡组物品行应消失（组内无卡=未开始收集）。
+	if _, err := db.SQL.Exec(`DELETE FROM item WHERE uid=? AND item_id LIKE 'card\_%' ESCAPE '\'`, uid); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := srv.prepareDeckItems(ctx, uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Decks) != 0 {
+		t.Fatalf("无卡时不应构造卡组物品: %d", len(plan.Decks))
+	}
+	tx, err := db.SQL.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncDeckItemsTx(ctx, tx, uid, plan); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := db.ListItemsByItemIDPrefix(ctx, uid, "tcdeck_"); err != nil || len(rows) != 0 {
+		t.Fatalf("卡清光后卡组物品未清理: n=%d err=%v", len(rows), err)
+	}
+}
+
+// TestSettleGrantsCardSyncsDeckItem 结算掉卡同事务落卡组计划。官方语义
+// （2026-11-08 改）：结算产的自由卡不带卡组变更（deckGUIDs 空）、不自动
+// 建卡组物品——进组只能玩家手动指派。
+func TestSettleGrantsCardSyncsDeckItem(t *testing.T) {
+	srv, db := newDetachTestServer(t)
+	ctx := context.Background()
+	uid := recoveryUID
+	if _, err := db.EnsureProfile(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	setCardDropTunable(t, srv, db, "card_drop_common", 1)
+	fish := cardTestFish("77777777777777777777777777777777", "carp")
+	res, err := srv.settleCatchOnce(ctx, uid, fish, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res == nil || res.cardGUID == "" {
+		t.Fatal("掉率 1.0 的结算未产卡")
+	}
+	if len(res.deckGUIDs) != 0 {
+		t.Fatalf("结算自由卡不应带卡组变更: %v", res.deckGUIDs)
+	}
+	if rows, err := db.ListItemsByItemIDPrefix(ctx, uid, "tcdeck_"); err != nil || len(rows) != 0 {
+		t.Fatalf("未指派不应有卡组物品: n=%d err=%v", len(rows), err)
+	}
+	card, err := db.GetItemByGUID(ctx, res.cardGUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cardParentGUID(card) != "" {
+		t.Fatal("结算产卡应为自由卡（卡牌列表可见）")
 	}
 }

@@ -462,6 +462,7 @@ func (s *Session) Push4_22ItemGUIDs(guids []string) {
 		}
 		tree, err := s.Srv.ItemToTree(pctx, row)
 		if err == nil && tree != nil {
+			patchNativeContainer(row, tree) // native 容器行（收藏册 18）补 wire 枚举
 			trees = append(trees, tree)
 		}
 	}
