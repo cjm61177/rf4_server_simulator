@@ -119,6 +119,7 @@ var categoryWireClass = map[int64]wireClassEntry{
 	72: {"enikeammfen", 2015},  // case 70 iidloljandl
 	76: {"fdnngkgnmon", 13041}, // case 74 ghikepgmojg
 	78: {"dapkdcghfmg", 11301}, // case 76 ipdpoaiekem
+	82: {"ckfmndabaei", 11304}, // imdcjllgdcn 卡册
 	80: {"ipdakkbfoja", 13301}, // 技能书（客户端按 wrapper 承载书目配置）
 	81: {"kbpmmclfipg", 1470},  // 渔轮电机（装在轮 f14 扩展槽，DTO odlknjlbooh）
 	// 卡组收藏册（tcdeck_*，cat 82）：实例类 ckfmndabaei/11304（DTO
@@ -129,7 +130,6 @@ var categoryWireClass = map[int64]wireClassEntry{
 	// dceidcbplaf 全部从库存物品事件取数——不走 24/18 档案聚合（rf4_hook
 	// 三轮硬件断点实证：Profile 族唯一拉取入口 ddkpcmhdfdb.hmdfmpmnaem
 	// 全程零命中，行渲染 73 次正常但 imdcjllgdcn 物品事件从未到达）。
-	82: {"ckfmndabaei", 11304},
 }
 
 const fallbackWireClass = "ohciikgjghe"
@@ -339,7 +339,7 @@ func (s *Server) ItemToTree(ctx context.Context, it *store.Item) (*proto.Value, 
 	return obj, nil
 }
 
-// materializeInto 物化嵌套子配置：渔轮 f2..f14、前导 f1..f2、拟饵 f0 出厂钩。
+// materializeInto 物化嵌套子配置：渔轮 f2..f14、前导 f1..f3、拟饵 f0 出厂钩。
 // 只填充空槽，已有子对象的槽保持不变。
 func (s *Server) materializeInto(ctx context.Context, class string, def *store.ItemDef, obj *proto.Value, guid string, workmanship, durability float64) {
 	attrs := defAttrs(def)
@@ -362,7 +362,7 @@ func (s *Server) materializeInto(ctx context.Context, class string, def *store.I
 	switch class {
 	case "dgjinoebdop": // 渔轮 f2..f14
 		fill(reelPartKeys, false)
-	case "oldfpclaabo": // 前导 f1/f2（f3 线槽 def 无配置恒 null）
+	case "oldfpclaabo": // 前导 f1 前导线、f2 连接件、f3 普通主线
 		fill(leaderPartKeys, false)
 		if idx := fieldIdxByCS(class, gearAttrLeaderIn); idx >= 0 && idx < len(obj.Fields) {
 			if normalized, changed := normalizeLeaderInnerWire(obj.Fields[idx].Val); changed {
@@ -421,6 +421,42 @@ func normalizeLeaderInnerWire(old *proto.Value) (*proto.Value, bool) {
 	return obj, true
 }
 
+// itemStrengthForPush 返回要下发给客户端的受力上限。
+//
+// 自制引线（leader_crafted_*）必须走实例材料：定义里的内嵌线材与连接件是
+// null，strengthBitsFor 只会得到 0，客户端拿到的就一直是制作时写进快照的旧值，
+// 磨损不体现、服务端最弱环也看不见这根引线。这里按材料定义重算并乘当前耐久，
+// 让两端用同一个数。耐久已耗尽时不改写，保留"损坏件不强写 0"的既有行为。
+func (s *Server) itemStrengthForPush(
+	ctx context.Context,
+	def *store.ItemDef,
+	it *store.Item,
+	fields []proto.Field,
+) (float64, bool) {
+	if strength, ok := strengthBitsFor(def, it.Durability); ok {
+		return strength, true
+	}
+	if def != nil && def.Category == gearCatLeader && it.Durability > 0 {
+		base := s.craftedLeaderBaseStrengthFromFields(ctx, it.WireClass, fields)
+		if base > 0 {
+			durability := it.Durability
+			if durability > 1 {
+				durability = 1
+			}
+			return base * durability, true
+		}
+	}
+	return 0, false
+}
+
+// rootItemStorageKind 根物品的 wire 容器枚举（csSlotEnum 回填值）：普通物品
+// 归背包(0)。上游卡牌平行实现还把卡/卡组归收藏库存(18)，本地部署沿用自家
+// 卡牌实现（cards.go），其容器由卡牌链路自行落库，此处不并入该分支。
+func rootItemStorageKind(class string) uint64 {
+	_ = class
+	return containerBackpack
+}
+
 // canonicalizeItemPhysicalFields 是物品物理字段的统一投影入口。
 //
 // fields_json 保存物品身份和状态，但工艺、耐久、强度、刹车片曳力和容器枚举
@@ -441,11 +477,17 @@ func (s *Server) canonicalizeItemPhysicalFields(ctx context.Context, it *store.I
 		}
 	}
 	if idx := fieldIdxByCS(class, csSlotEnum); idx >= 0 && fieldOpAt(class, idx) == "BYTE" {
-		// 根物品即使已装配，wire 容器枚举仍为 0。
+		// 卡片属于专用收藏库存；背包/装备中的根物品 wire 容器枚举为 0，
+		// 存入房屋的物品为 10——客户端物品管理器（eegjkjenhoe）按该枚举
+		// 把物品挂进对应容器字典，恒 0 会让房屋仓库永远收不到物品。
 		// container='rig' 是服务端归属，不是物品对象的 lmmhdlhogdc；
 		// 只有母物品内部的嵌套子实例使用 rig(4)。
-		if u64Of(fields[idx].Num) != 0 {
-			fields[idx].Num = ptrU64(0)
+		kind := rootItemStorageKind(class)
+		if it.Container == "house" {
+			kind = 10
+		}
+		if u64Of(fields[idx].Num) != kind {
+			fields[idx].Num = ptrU64(kind)
 			changed = true
 		}
 	}
@@ -458,19 +500,10 @@ func (s *Server) canonicalizeItemPhysicalFields(ctx context.Context, it *store.I
 	// 安装的摩擦片制动力，缺失时才回退到出厂摩擦片；传动比只在齿轮
 	// 子件自己的强度字段里出现，不能污染母轮上限。
 	if class == "dgjinoebdop" {
-		strength := s.reelBaseDragFromRow(ctx, it)
-		if strength > 0 {
-			idx := fieldIdxByCS(class, csStrength)
-			if setWireFloat(fields, class, idx, strength) {
-				changed = true
-			}
-		} else if strength, ok := strengthBitsFor(def, it.Durability); ok {
-			idx := fieldIdxByCS(class, csStrength)
-			if setWireFloat(fields, class, idx, strength) {
-				changed = true
-			}
+		if s.canonicalizeReelStrength(ctx, it, fields) {
+			changed = true
 		}
-	} else if strength, ok := strengthBitsFor(def, it.Durability); ok {
+	} else if strength, ok := s.itemStrengthForPush(ctx, def, it, fields); ok {
 		idx := fieldIdxByCS(class, csStrength)
 		if setWireFloat(fields, class, idx, strength) {
 			changed = true
@@ -621,6 +654,29 @@ func canonicalizeNestedItemContainers(class string, fields []proto.Field) bool {
 	return changed
 }
 
+// canonicalizeReelStrength updates only the reel root scale, leaving installed
+// parts untouched. FieldsJSON must describe the currently selected parts.
+func (s *Server) canonicalizeReelStrength(ctx context.Context, it *store.Item, fields []proto.Field) bool {
+	if it == nil || it.WireClass != "dgjinoebdop" {
+		return false
+	}
+	if strength, present := s.reelInstalledDragFieldFromRow(ctx, it); present {
+		return setWireFloat(fields, it.WireClass, fieldIdxByCS(it.WireClass, csStrength), strength)
+	}
+	strength := s.reelBaseDragFromRow(ctx, it)
+	if strength > 0 {
+		return setWireFloat(fields, it.WireClass, fieldIdxByCS(it.WireClass, csStrength), strength)
+	}
+	def, err := s.itemDefForRow(ctx, it)
+	if err != nil || def == nil {
+		return false
+	}
+	if strength, ok := strengthBitsFor(def, it.Durability); ok {
+		return setWireFloat(fields, it.WireClass, fieldIdxByCS(it.WireClass, csStrength), strength)
+	}
+	return false
+}
+
 // setWireFloat 写入 wire 浮点字段；兼容 FLOAT/DOUBLE 与 U32 承载 IEEE754 的
 // registry 布局。返回是否真的改变，供一次性数据修复决定是否落库。
 func setWireFloat(fields []proto.Field, class string, idx int, v float64) bool {
@@ -694,10 +750,9 @@ func (s *Server) rebuildRod(ctx context.Context, it *store.Item, obj *proto.Valu
 	// 都按 f5 的 gcfcdnfmnbh 逐行渲染，缺了它们零件行就是空的。
 	s.appendFactoryPartsToRig(ctx, obj)
 
-	// f16 Ticks now / f18 状态位 = 定义 | 2048
-	if idx := fieldIdxByCS("cnolibojkao", csCreated); idx >= 0 {
-		obj.Fields[idx].Num = ptrU64(uint64(netTicksNow()))
-	}
+	// 版本戳由实际装配/耐久修改推进。读取时变更版本会使客户端把未改动的
+	// 水中鱼竿也当作新快照重建，切竿或同步背包不应改变搏鱼实体。
+	// f18 状态位 = 定义 | 2048
 	if idx := fieldIdxByCS("cnolibojkao", "hgaijieklek"); idx >= 0 {
 		st := u64Of(obj.Fields[idx].Num)
 		if defBits, ok := defAttrU64(def, "hgaijieklek"); ok {
@@ -879,15 +934,46 @@ func (s *Server) defaultRig153(ctx context.Context, it *store.Item) *proto.Value
 		}
 	}
 	clipM, _ := s.savedReelClipM(ctx, it.GUID)
+	drag := defaultReelDragSetting
+	if saved, ok := s.rodReelDragSetting(ctx, it.GUID); ok {
+		drag = saved
+	}
+	speed := defaultReelSpeed
+	if saved, ok := s.rodReelSpeedSetting(ctx, it.GUID); ok {
+		speed = saved
+	}
 	return wiregen.MustMakeObj("gbbhdkefnkn", map[int]*proto.Value{
 		0: proto.StrVal(name),
 		1: proto.U32(uint32(rigType)),
 		2: components,
 		4: proto.U32(uint32(depth)),
 		5: proto.U32(uint32(clipM)),
-		6: proto.U32(15),
-		7: proto.U32(15),
+		6: proto.U32(uint32(drag)),
+		7: proto.U32(uint32(speed)),
 	})
+}
+
+// fillFeedUnitWeight 把单件克重写进窝料实例的重量字段（U32 槽承载 IEEE754 位模式，
+// FLOAT 槽直接写浮点）。已有非零值不覆盖，返回是否发生变化。
+// 用途：老库存实例是在「照抄定义」的年代生成的，重量恒为 0。
+func fillFeedUnitWeight(wireClass string, fields []proto.Field, itemID string) bool {
+	idx := fieldIdxByCS(wireClass, castAttrWaterWeight)
+	if idx < 0 || idx >= len(fields) {
+		return false
+	}
+	grams := groundbaitUnitGrams(itemID)
+	if fieldIsFloat(wireClass, idx) {
+		if fields[idx].Float != 0 {
+			return false
+		}
+		fields[idx].Float = grams
+		return true
+	}
+	if u64Of(fields[idx].Num) != 0 {
+		return false
+	}
+	fields[idx].Num = ptrU64(uint64(math.Float32bits(float32(grams))))
+	return true
 }
 
 // applyDefAttrs 将 item_def.attrs_json 回填到对象；浮点值使用 IEEE754 位模式。
@@ -923,6 +1009,14 @@ func (s *Server) applyDefAttrs(def *store.ItemDef, class string, obj *proto.Valu
 			if _, exists := attrs["dnmfciolgep"]; !exists {
 				attrs["dnmfciolgep"] = v
 			}
+		}
+	}
+	// 品类 46（成品窝料）的原生定义不带克重，实例照抄定义就永远是「质量 0 克」。
+	// 客户端「质量」那一行读的是实例重量字段（cilmgoaoofg f7 ijbjficbhog）的
+	// IEEE754 位模式、单位克；真实服务端按实例下发，这里按窝料档案补上。
+	if def.Category == 46 {
+		if w, ok := attrs[castAttrWaterWeight].(float64); !ok || w == 0 {
+			attrs[castAttrWaterWeight] = float64(math.Float32bits(float32(groundbaitUnitGrams(def.ItemID))))
 		}
 	}
 	for cs, val := range attrs {
@@ -1074,7 +1168,7 @@ var reclassifyCategories = map[int64]bool{
 	2: true, 19: true, 20: true, 30: true, 33: true, 38: true, 41: true,
 	42: true, 45: true, 47: true, 55: true, 57: true, 58: true, 61: true,
 	62: true, 63: true, 69: true, 70: true, 71: true, 72: true, 76: true,
-	78: true, 79: true,
+	78: true, 79: true, 82: true,
 }
 
 func (s *Server) reclassifyStoredItem(ctx context.Context, it *store.Item, def *store.ItemDef) (bool, error) {

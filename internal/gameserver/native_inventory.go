@@ -16,6 +16,11 @@ func nativeInventoryContainers(kind uint64) []string {
 		return []string{"backpack", "rig"}
 	case 17, 18:
 		return []string{fmt.Sprintf("native:%d", kind)}
+	case 10, 11:
+		// 房屋仓库（容器枚举 10/11 统一落 item.container='house'，与
+		// containerEnumName 一致）。缺这条映射时 4/1 计数与 4/4 列表
+		// 对房屋容器一律回空，客户端房屋仓库 UI 永远无数据。
+		return []string{"house"}
 	}
 	return nil
 }

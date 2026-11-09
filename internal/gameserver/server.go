@@ -53,7 +53,8 @@ type Server struct {
 	callSeq map[string]uint64 // token -> 已分配的最大推送 call_id
 
 	// 钓鱼/业务状态
-	fishStates             map[int64]*FishState
+	fishStates             map[int64]map[string]*FishState
+	heldFishingRods        map[int64]string
 	fishMu                 sync.Mutex
 	levelMap               map[int64]string
 	levelMu                sync.Mutex
@@ -64,6 +65,7 @@ type Server struct {
 	// 运行参数缓存
 	tunMu    sync.Mutex
 	tunCache map[string]float64
+	tunText  map[string]string
 	tunAt    time.Time
 
 	// 搏鱼曲线池
@@ -92,14 +94,15 @@ func NewServer(cfg config.Game, log *slog.Logger, obs *metrics.Server) *Server {
 	reg := obsRegistry(obs)
 	initMetrics(reg)
 	s := &Server{
-		cfg:        cfg,
-		log:        log,
-		table:      wiregen.Table(),
-		sessions:   map[uint64]*Session{},
-		byToken:    map[string]*Session{},
-		callSeq:    map[string]uint64{},
-		fishStates: map[int64]*FishState{},
-		levelMap:   map[int64]string{},
+		cfg:             cfg,
+		log:             log,
+		table:           wiregen.Table(),
+		sessions:        map[uint64]*Session{},
+		byToken:         map[string]*Session{},
+		callSeq:         map[string]uint64{},
+		fishStates:      map[int64]map[string]*FishState{},
+		heldFishingRods: map[int64]string{},
+		levelMap:        map[int64]string{},
 	}
 	s.dispatch = NewDispatch(s)
 	registerHandlers(s.dispatch)

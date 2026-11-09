@@ -20,6 +20,7 @@ type fishPersistMeta struct {
 	sync.Mutex
 	server           *Server
 	uid              int64
+	rodGUID          string // 不可变快照键；装备失效清GearGuid时仍更新原行
 	lastSnapshot     string
 	sessionID        uint64 // 仅进程内：检测重连/会话接管
 	recoverPending   bool   // 仅进程内：重连后重推同一尾 pending，不重新 roll
@@ -50,7 +51,7 @@ func (m *fishStateMutex) Unlock() {
 }
 
 // newFishState 首次建内存状态时从 DB 恢复。Keepnet 不在此恢复：DB 是权威源。
-func (s *Server) newFishState(uid int64) *FishState {
+func (s *Server) newFishState(uid int64, saved *store.FishingState) *FishState {
 	st := &FishState{
 		Loc:  "loc1_02",
 		Spot: 573,
@@ -63,14 +64,10 @@ func (s *Server) newFishState(uid int64) *FishState {
 	st.persist.server = s
 	st.persist.uid = uid
 
-	if s.DB != nil {
-		saved, err := s.DB.LoadFishingState(s.dbCtx(), uid)
-		if err != nil {
-			s.log.Warn("读取钓鱼恢复状态失败", "uid", uid, "err", err)
-		} else if saved != nil {
-			applyPersistedFishingState(st, saved)
-			st.persist.recoverPending = saved.Pending != nil
-		}
+	if saved != nil {
+		st.persist.rodGUID = saved.RodGUID
+		applyPersistedFishingState(st, saved)
+		st.persist.recoverPending = saved.Pending != nil
 	}
 	if raw, err := json.Marshal(fishingStateSnapshot(st)); err == nil {
 		st.persist.lastSnapshot = string(raw)
@@ -88,6 +85,7 @@ func applyPersistedFishingState(st *FishState, saved *store.FishingState) {
 		st.Spot = saved.Spot
 	}
 	st.DepthCM = saved.DepthCM
+	st.CastM = saved.CastM
 	st.CastActive = saved.CastActive
 	st.CastTs = saved.CastTS
 	st.FallTs = saved.FallTS
@@ -100,6 +98,9 @@ func applyPersistedFishingState(st *FishState, saved *store.FishingState) {
 	st.Hooked = saved.Hooked
 	st.Resolved = saved.Resolved
 	st.Pending = rolledFishFromStore(saved.Pending)
+	if st.Pending != nil && st.Pending.GearGUID == "" {
+		st.Pending.GearGUID = saved.GearGUID
+	}
 	if saved.Bait != "" {
 		st.Bait = saved.Bait
 	}
@@ -122,11 +123,13 @@ func fishingStateSnapshot(st *FishState) *store.FishingState {
 	}
 	return &store.FishingState{
 		UID:            st.persist.uid,
+		RodGUID:        st.persist.rodGUID,
 		GearGUID:       st.GearGuid,
 		RigType:        st.RigType,
 		Loc:            st.Loc,
 		Spot:           st.Spot,
 		DepthCM:        st.DepthCM,
+		CastM:          st.CastM,
 		CastActive:     st.CastActive,
 		CastTS:         st.CastTs,
 		FallTS:         st.FallTs,
@@ -154,10 +157,14 @@ func rolledFishToStore(f *RolledFish) *store.FishingFish {
 		return nil
 	}
 	return &store.FishingFish{
-		HookGUID:   f.HookGUID,
-		BaitGUIDs:  f.BaitGUIDs,
-		BaitsKnown: f.BaitsKnown,
-		HappyHour:  f.HappyHour, HappyHourKnown: f.HappyHourKnown,
+		GearGUID:    f.GearGUID,
+		HookGUID:    f.HookGUID,
+		BaitGUIDs:   f.BaitGUIDs,
+		BaitsKnown:  f.BaitsKnown,
+		BiteQuality: f.BiteQuality, HookHoldP: f.HookHoldP, LuckProtected: f.LuckProtected,
+		HookConfirmed: f.HookConfirmed,
+		HuntStage:     f.HuntStage, HuntStageKnown: f.HuntStageKnown,
+		HappyHour: f.HappyHour, HappyHourKnown: f.HappyHourKnown,
 		FishGUID: f.FishGUID,
 		Species:  f.Species,
 		Grade:    f.Grade,
@@ -168,6 +175,18 @@ func rolledFishToStore(f *RolledFish) *store.FishingFish {
 		LocLevel: f.LocLevel,
 		NamedID:  f.NamedID,
 		Name:     f.Name,
+
+		QualBaitID:     f.QualBait.ID,
+		QualBaitCat:    f.QualBait.Cat,
+		QualBaitClass:  f.QualBait.Class,
+		QualBaitFlavor: f.QualBait.Flavor,
+		QualBaitLenCM:  f.QualBait.LenCM,
+		QualBaitSizeMM: f.QualBait.SizeMM,
+		CastM:          f.CastM,
+		IsNight:        f.IsNight,
+		DepthCM:        f.DepthCM,
+		OnBoat:         f.OnBoat,
+		Drift:          f.Drift,
 	}
 }
 
@@ -176,10 +195,14 @@ func rolledFishFromStore(f *store.FishingFish) *RolledFish {
 		return nil
 	}
 	return &RolledFish{
-		HookGUID:   f.HookGUID,
-		BaitGUIDs:  f.BaitGUIDs,
-		BaitsKnown: f.BaitsKnown,
-		HappyHour:  f.HappyHour, HappyHourKnown: f.HappyHourKnown,
+		GearGUID:    f.GearGUID,
+		HookGUID:    f.HookGUID,
+		BaitGUIDs:   f.BaitGUIDs,
+		BaitsKnown:  f.BaitsKnown,
+		BiteQuality: f.BiteQuality, HookHoldP: f.HookHoldP, LuckProtected: f.LuckProtected,
+		HookConfirmed: f.HookConfirmed,
+		HuntStage:     f.HuntStage, HuntStageKnown: f.HuntStageKnown,
+		HappyHour: f.HappyHour, HappyHourKnown: f.HappyHourKnown,
 		FishGUID: f.FishGUID,
 		Species:  f.Species,
 		Grade:    f.Grade,
@@ -190,6 +213,20 @@ func rolledFishFromStore(f *store.FishingFish) *RolledFish {
 		LocLevel: f.LocLevel,
 		NamedID:  f.NamedID,
 		Name:     f.Name,
+
+		QualBait: qualificationBait{
+			ID:     f.QualBaitID,
+			Cat:    f.QualBaitCat,
+			Class:  f.QualBaitClass,
+			Flavor: f.QualBaitFlavor,
+			LenCM:  f.QualBaitLenCM,
+			SizeMM: f.QualBaitSizeMM,
+		},
+		CastM:   f.CastM,
+		IsNight: f.IsNight,
+		DepthCM: f.DepthCM,
+		OnBoat:  f.OnBoat,
+		Drift:   f.Drift,
 	}
 }
 

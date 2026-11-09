@@ -23,7 +23,8 @@ type catchReceipt struct {
 	CaughtAt                                         float64
 	// CardGUID 是本次结算掉落的卡牌物品 guid（未掉卡为空）。回执重放时
 	// 原样带出，14/4 仍能重推库存同步而不会二次发卡。
-	CardGUID string `json:",omitempty"`
+	CardGUID      string                             `json:",omitempty"`
+	Qualification map[int64]store.QualificationState `json:",omitempty"`
 }
 
 func (r catchReceipt) result(replayed bool) *settleXpResult {
@@ -34,7 +35,7 @@ func (r catchReceipt) result(replayed bool) *settleXpResult {
 	return &settleXpResult{baseXP: r.BaseXP, totalXP: r.TotalXP, premiumXP: r.PremiumXP, bonuses: r.Bonuses, skillGain: gain, silver: r.Silver,
 		prevBest: r.PreviousBest, newLevel: r.Level, totalXp: r.AccumulatedXP,
 		levelsGained: r.LevelsGained, isRecord: r.IsRecord, skillID: r.SkillID, replayed: replayed,
-		cardGUID: r.CardGUID}
+		cardGUID: r.CardGUID, qualChanges: r.Qualification}
 }
 
 type catchWear struct {
@@ -112,6 +113,13 @@ func (s *Server) prepareCatchWear(ctx context.Context, uid int64, rigGUID string
 
 // settleCatchOnce 用鱼 GUID 记账，经验、熟练度、磨损和回执一起提交。
 func (s *Server) settleCatchOnce(ctx context.Context, uid int64, f *RolledFish, rigType int64) (*settleXpResult, error) {
+	return s.settleCatchOnceWithQualification(ctx, uid, f, rigType, nil)
+}
+
+// settleCatchOnceWithQualification 把资格判定与经验、磨损、回执放进同一事务：
+// 资格写失败会回滚整笔结算，客户端重试时重新判定；回执同时保存本尾鱼的资格
+// 变化，重放可补发丢失的增量响应，且按鱼 GUID 去重不会重复计数。
+func (s *Server) settleCatchOnceWithQualification(ctx context.Context, uid int64, f *RolledFish, rigType int64, ev *qualificationEvent) (*settleXpResult, error) {
 	if f == nil || f.FishGUID == "" {
 		return nil, fmt.Errorf("缺少钓获鱼标识")
 	}
@@ -136,7 +144,7 @@ func (s *Server) settleCatchOnce(ctx context.Context, uid int64, f *RolledFish, 
 	if xp < 1 {
 		xp = 1
 	}
-	state := s.stateFor(uid)
+	state := s.fishingStateForFish(uid, f)
 	state.mu.Lock()
 	gear := state.GearGuid
 	if !f.HappyHourKnown {
@@ -290,6 +298,15 @@ func (s *Server) settleCatchOnce(ctx context.Context, uid int64, f *RolledFish, 
 			}
 		}
 	}
+	if ev != nil {
+		qev := *ev
+		qev.XP = totalXP
+		changes, err := evaluateQualificationsTx(ctx, tx, uid, qev, float64(time.Now().Unix()))
+		if err != nil {
+			return nil, err
+		}
+		r.Qualification = changes
+	}
 	raw, err := json.Marshal(r)
 	if err != nil {
 		return nil, err
@@ -302,5 +319,13 @@ func (s *Server) settleCatchOnce(ctx context.Context, uid int64, f *RolledFish, 
 	}
 	res := r.result(false)
 	res.deckGUIDs = deckGUIDs
+	// 官方升级礼物：真实升级（非重放）后逐级直发背包，内部按等级幂等；
+	// 钓法大类取本尾鱼（11 级分套依据）。礼物行随结果返回，由 14/4 处理器
+	// 挂结算奖励列表（801 f8）并在响应后推 4/22；聊天播报在发放函数内完成。
+	if !res.replayed && r.LevelsGained > 0 {
+		for _, g := range s.grantLevelUpGifts(ctx, uid, oldLevel, level, r.SkillID) {
+			res.giftItems = append(res.giftItems, g.Items...)
+		}
+	}
 	return res, nil
 }

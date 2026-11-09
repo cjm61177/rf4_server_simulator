@@ -268,6 +268,9 @@ func TestAdminGrantCardQueueGrantsSeparateCards(t *testing.T) {
 func TestFishingEndSettleGrantsCard(t *testing.T) {
 	srv, db := newDetachTestServer(t)
 	sess := recoveryLogin(t, srv, 881)
+	// 新玩家首钓必升级，会触发升级礼物进 801.f8；本测试只验证掉卡素材，
+	// 关掉礼物保持 f8 断言单一语义。
+	setCardDropTunable(t, srv, db, "level_gifts_enabled", 0)
 	setCardDropTunable(t, srv, db, "card_drop_common", 1)
 	st := srv.fishingState(recoveryUID)
 	st.mu.Lock()
@@ -298,7 +301,9 @@ func TestFishingEndSettleGrantsCard(t *testing.T) {
 }
 
 func TestFishingEndSettleCardFieldEmptyWithoutDrop(t *testing.T) {
-	srv, _ := newDetachTestServer(t)
+	srv, db := newDetachTestServer(t)
+	// 同上：隔离升级礼物对 801.f8 的附加，单测「无掉卡=f8 空数组」。
+	setCardDropTunable(t, srv, db, "level_gifts_enabled", 0)
 	sess := recoveryLogin(t, srv, 882)
 	st := srv.fishingState(recoveryUID)
 	st.mu.Lock()

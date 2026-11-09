@@ -10,6 +10,8 @@ import (
 )
 
 func registerSocialHandlers(d *Dispatch) {
+	d.Register(24, 4, hSocialMembers)
+	d.RegisterResponseContract(24, 4, ResponseContractRule{Kind: proto.KindU32Arr})
 	d.Register(24, 18, hSocialUserProfile)
 	d.Register(24, 19, hSocialUserCard)
 	d.Register(24, 21, hSocialAbsoluteRecords)
@@ -51,6 +53,8 @@ func hSocialUserProfile(ctx *Ctx) ([]byte, bool) {
 	}
 	// f9 kiflcpfmehe = 卡组数组 imdcjllgdcn[]（args code 340）：收藏册
 	// （ddkpcmhdfdb → RUIModelExplorerPanel_1）的收集进度素材。恒发数组不发 null。
+	// 本地部署沿用自家 buildCardDeckArray 实现；上游 playerTradingDecks 卡牌
+	// 平行实现不并入（见 specs/changes/trading-cards 演进记录）。
 	if ctx.Sess.Srv != nil && ctx.Sess.Srv.DB != nil {
 		decks, err := ctx.Sess.Srv.buildCardDeckArray(ctx.Sess.Srv.dbCtx(), uid)
 		if err != nil {
@@ -73,6 +77,13 @@ func hSocialUserProfile(ctx *Ctx) ([]byte, bool) {
 
 func hSocialUserCard(ctx *Ctx) ([]byte, bool) {
 	uid := firstRequestUID(ctx)
+	if uid == fishQueryContactUID {
+		outer, err := bytesWrappedObject(fishQueryContactCard(), ctx.Sess.Table())
+		if err != nil {
+			return nil, false
+		}
+		return encodeSocialTree(ctx, outer)
+	}
 	var p *store.Profile
 	names := ""
 	level := int64(1)
@@ -90,12 +101,10 @@ func hSocialUserCard(ctx *Ctx) ([]byte, bool) {
 			level = p.Level
 			role = p.Role
 			region = socialRegionCode(p.Region)
-			if rows, err := ctx.Sess.Srv.DB.PlayerCatchRecords(ctx.Sess.Srv.dbCtx(), uid); err == nil {
-				for _, r := range rows {
-					if r.Grade >= 3 {
-						trophies++
-					}
-				}
+			// f5 与 profile f16 同落客户端 ifbfdldbana.gebeadddmlp（等级旁
+			// 星号同一字段），官服按鱼种去重计，不按稀有渔获条数。
+			if n, err := ctx.Sess.Srv.DB.RareSpeciesCount(ctx.Sess.Srv.dbCtx(), uid, 3); err == nil {
+				trophies = n
 			}
 		}
 	}
