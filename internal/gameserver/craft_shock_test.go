@@ -206,3 +206,53 @@ func makeLegacyShockLeaderWithF1Line(
 	}
 	return row.GUID
 }
+
+// 回归（配方口径收窄）：减震引线只收普通主线。物化器按 f3 主线槽语义
+// 拒收前导线（b0ac5d3），配方却曾放行 categories [11,15]，客户端照配方
+// 选前导线（如 Atami Leader Nylon 400LB 50m = mn_lm_40809）必然在物化
+// 阶段固定回滚。配方收窄到 [11] 后，拒绝应发生在需求匹配阶段：材料不
+// 被扣、成品不产出。
+func TestCraftShockLeaderRejectsLeaderWireMaterial(t *testing.T) {
+	db := openRecipeTestDB(t)
+	srv := newSkillsCraftServer(t, db)
+	ctx := context.Background()
+	const uid = int64(2000043)
+	if _, err := db.EnsureProfile(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	line, err := srv.CreateItem(ctx, uid, "mn_lm_40809", "backpack", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.alignItemRowQty(ctx, line)
+	if fresh, err := db.GetItemByGUID(ctx, line.GUID); err != nil || fresh == nil {
+		t.Fatalf("读取前导线材料: %v", err)
+	} else {
+		line = fresh
+	}
+	spoolBefore := line.Qty
+	sess := &Session{ID: 1, Userid: uid, Srv: srv, log: logging.Discard()}
+	hctx := &Ctx{Sess: sess, Main: 9, Sub: 1, CallID: 1, DecodeOK: true,
+		Tree: proto.Args524(craftObj8("craft_leader_shock_200", []craftSlot{{ItemID: "craft_mat_line", GUID: line.GUID}}, 1)), Log: logging.Discard()}
+	body, ok := hCraft(hctx)
+	if !ok || u64Of(decodeTreeValue(t, srv, body).Fields[0].Num) == 1 {
+		t.Fatalf("前导线做减震引线应被拒绝: ok=%v", ok)
+	}
+	// 材料不得被扣，成品不得产出。
+	rows, err := db.ListItemsByContainers(ctx, uid, []string{"backpack"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spoolQty := int64(0)
+	for _, row := range rows {
+		if row.ItemID == "leader_crafted_shock_200" {
+			t.Fatal("不应产出减震引线成品")
+		}
+		if row.ItemID == "mn_lm_40809" {
+			spoolQty += row.Qty
+		}
+	}
+	if spoolQty != spoolBefore {
+		t.Fatalf("前导线不得被消耗: before=%d after=%d", spoolBefore, spoolQty)
+	}
+}
