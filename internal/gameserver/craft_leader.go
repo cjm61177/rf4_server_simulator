@@ -360,11 +360,12 @@ func (s *Server) materializeCraftedLeaderTx(
 	lineKey := gearAttrLeaderIn
 	switch materials.line.def.Category {
 	case gearCatLine:
+		// 普通主线写入 f3（外壳强制 cat11）。
 		lineKey = craftedMainLineKey
 	case gearCatLeaderWire:
-		if isCraftedShockLeader(row.ItemID) {
-			return errors.New("减震引线需要普通主线")
-		}
+		// 前导线走 f1（外壳强制 cat15）。减震引线与普通引线同一个
+		// wire class/DTO，渲染路径相同；配方数据 [11,15] 本就放行
+		// 前导线（2026-11-09 放开，此前 b0ac5d3 的拒收无实锚证据）。
 	default:
 		return errors.New("引线材料不是主线或前导线")
 	}
@@ -491,9 +492,10 @@ func applyCraftedMaterialState(obj *proto.Value, material craftedMaterial, lengt
 
 // repairCraftedLeaderWire 修复旧版自制引线的内嵌线材槽位。
 //
-// 新格式中 f3 保存普通主线，f1 保存前导线。旧减震引线可能把 cat11 或
-// cat15 对象留在 f1；这两类都需要迁到 f3 并清空 f1。普通引线仍沿用旧修复
-// 路径：把误放进 f1 的 cat11 对象映射成真实的 cat15 前导线定义。
+// 现行格式：普通主线在 f3（cat11 外壳），前导线在 f1（cat15 外壳）——
+// 减震引线与普通引线一致。旧减震引线把 cat11 对象留在 f1，迁到 f3 并
+// 清空 f1；普通引线仍沿用旧修复路径：把误放进 f1 的 cat11 对象映射成
+// 真实的 cat15 前导线定义。
 //
 // 返回 invalid 表示这件引线根本没有可搬运的内嵌线材（或前导线目录为空），
 // 必须从背包隔离；参数不一致已不再算无效。
@@ -536,18 +538,25 @@ func (s *Server) repairCraftedLeaderWire(
 	targetKey := gearAttrLeaderIn
 	targetIdx := lineIdx
 	materialDef := lineDef
+	if lineDef.Category == gearCatLeaderWire {
+		// f1 里的前导线就是现行格式的正确位置（普通引线一直如此；
+		// 减震引线放开后同样如此），不得迁动——迁去 f3 会把 cat15
+		// 物品塞进 cat11 外壳，渲染成错误身份。
+		return false, false, nil
+	}
 	if shock {
-		if lineDef.Category != gearCatLine && lineDef.Category != gearCatLeaderWire {
+		if lineDef.Category != gearCatLine {
 			return false, true, nil
 		}
+		// 旧格式减震引线：cat11 留在 f1，迁到 f3。
 		targetKey = craftedMainLineKey
 		targetIdx = mainIdx
 		if targetIdx < 0 || targetIdx >= len(fields) {
 			return false, true, nil
 		}
 	} else {
-		if lineDef.Category == gearCatLeaderWire {
-			return false, false, nil
+		if lineDef.Category != gearCatLine {
+			return false, true, nil
 		}
 		materialDef, err = s.leaderWireDefForLine(ctx, lineDef)
 		if err != nil {
