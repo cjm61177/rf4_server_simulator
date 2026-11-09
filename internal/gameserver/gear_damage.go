@@ -39,15 +39,16 @@ const (
 )
 
 type gearBreakOutcome struct {
-	LineBroken      bool
-	ReelDamaged     bool
-	ReelBroken      bool // 轮子耐久本次被打到 0：已损坏，须修理才能再抛投。
-	FrictionWorn    bool // 摩擦片(cat9)磨穿：泄力失效，最大泄力归零，需换摩擦片。
-	ComponentBroken bool
-	BreakPart       string // hook / leader / line / reel / rod / component
-	LineLossM       int64
-	BrokenGUID      string
-	RemovedGUIDs    []string
+	OverloadProtected bool // 取消破坏，不生成成功断件响应或改变当前鱼
+	LineBroken        bool
+	ReelDamaged       bool
+	ReelBroken        bool // 轮子耐久本次被打到 0：已损坏，须修理才能再抛投。
+	FrictionWorn      bool // 摩擦片(cat9)磨穿：泄力失效，最大泄力归零，需换摩擦片。
+	ComponentBroken   bool
+	BreakPart         string // hook / leader / line / reel / rod / component
+	LineLossM         int64
+	BrokenGUID        string
+	RemovedGUIDs      []string
 	// StackRefreshGUIDs 是被删计件事件的背包来源堆（或同物品号剩余堆），
 	// 装配拆堆时服务端数量已减但客户端不知道，删除时需要一并刷新。
 	StackRefreshGUIDs []string
@@ -253,6 +254,15 @@ func (s *Server) breakLineOrRod(ctx context.Context, uid int64, rodGUID, reporte
 	report, err := s.validateBreakReport(ctx, uid, rodGUID, reportedGUID)
 	if err != nil {
 		return nil, err
+	}
+	s.overloadProtectionMu.RLock()
+	defer s.overloadProtectionMu.RUnlock()
+	protected, err := readOverloadProtection(ctx, s.DB.SQL, uid)
+	if err != nil {
+		return nil, err
+	}
+	if protected {
+		return &gearBreakOutcome{OverloadProtected: true}, nil
 	}
 	// 断件即终局：把本竿已累计的渔轮磨损落库，否则这条账会随状态重置丢掉。
 	s.markFightReelBreak(uid, rodGUID)
@@ -882,7 +892,7 @@ func (s *Server) resolveGearBreak(ctx context.Context, uid int64, rodGUID, repor
 }
 
 // damageReelSlip 处理"泄力打滑"：鱼力超过泄力档时，摩擦片打滑放线、发热磨损，
-// 制动力 csDragForce 线性衰减（基准 reelSlipWear=0.5%/次）→ 泄力失效。
+// 制动力 csDragForce 线性衰减（基准 reelSlipWear=0.01%/次）→ 泄力失效。
 // 摩擦片是"只能摩擦不能损坏"的消耗件，磨穿只泄力失效、不伤本体，换片即恢复。
 func (s *Server) damageReelSlip(ctx context.Context, uid int64, rodGUID, reelGUID string) (*gearBreakOutcome, error) {
 	return s.damageReelSlipWear(ctx, uid, rodGUID, reelGUID, reelSlipWear, nil)
