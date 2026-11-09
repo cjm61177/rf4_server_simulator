@@ -193,6 +193,8 @@ func pickLeaderWireDef(lineDef *store.ItemDef, candidates []*store.ItemDef) *sto
 // consumeLeaderCraftMaterialsTx 按配方需求扣除真实材料，并保留线材和连接件
 // 的实例定义。客户端提交的临时 GUID 找不到时必须回退到请求里的需求 ID，
 // 不能把任意背包物品当材料，也不能只扣一份而忽略 demand 数量。
+// 玩家明确指定的真实实例类目不合格时整体拒绝，不得静默换料
+// （2026-11-09 事故：选前导线做减震引线，服务端自选钓组上的主线扣料）。
 func (s *Server) consumeLeaderCraftMaterialsTx(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -231,13 +233,21 @@ func (s *Server) consumeLeaderCraftMaterialsTx(
 		}
 		var pick *craftedMaterial
 
-		tryRow := func(row *store.Item) (bool, error) {
+		tryRow := func(row *store.Item, explicit bool) (bool, error) {
 			if row == nil || row.Qty <= 0 || consumed[row.GUID] {
 				return false, nil
 			}
 			match, err := s.craftDemandMatchesTx(ctx, tx, demand, row)
-			if err != nil || !match {
+			if err != nil {
 				return false, err
+			}
+			if !match {
+				if explicit {
+					// 玩家在槽位里明确指定的真实实例不合格：整个制作必须
+					// 失败并回滚，绝不能跳过它去扫背包换料。
+					return false, fmt.Errorf("所选材料不符合配方要求: %s", row.ItemID)
+				}
+				return false, nil
 			}
 			if pick == nil {
 				def, err := itemDefByItemIDTx(ctx, tx, row.ItemID)
@@ -269,13 +279,16 @@ func (s *Server) consumeLeaderCraftMaterialsTx(
 			return got > 0, nil
 		}
 
-		// 客户端给出的真实实例 GUID 优先，但必须通过需求类目校验。
+		// 客户端给出的真实实例 GUID 优先，但必须通过需求类目校验；
+		// 库里查不到的临时 GUID 才交给下面的补扣扫描。
 		for _, guid := range preferred[demand.DemandID] {
 			if need <= 0 {
 				break
 			}
-			if _, err := tryRow(byGUID[guid]); err != nil {
-				return nil, selected, err
+			if row := byGUID[guid]; row != nil {
+				if _, err := tryRow(row, true); err != nil {
+					return nil, selected, err
+				}
 			}
 		}
 		// 临时 GUID 或指定实例数量不足时，按需求类目从真实背包继续补扣。
@@ -283,7 +296,7 @@ func (s *Server) consumeLeaderCraftMaterialsTx(
 			if need <= 0 {
 				break
 			}
-			if _, err := tryRow(row); err != nil {
+			if _, err := tryRow(row, false); err != nil {
 				return nil, selected, err
 			}
 		}

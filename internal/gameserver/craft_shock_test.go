@@ -256,3 +256,97 @@ func TestCraftShockLeaderRejectsLeaderWireMaterial(t *testing.T) {
 		t.Fatalf("前导线不得被消耗: before=%d after=%d", spoolBefore, spoolQty)
 	}
 }
+
+// 回归（明确选料不得静默换料，2026-11-09 事故）：玩家在槽位里明确指定
+// 前导线（mn_lm_40809）做减震引线时，服务端不得因它类目不合格就跳过，
+// 再从背包/钓组里自选一卷合格主线扣料物化——当时钓组上的 mono_15065
+// 被悄悄扣掉，产出了 3.1kg 的尼龙线。现在必须整体拒绝，两卷线都原样保留。
+func TestCraftShockLeaderExplicitWrongMaterialNotSubstituted(t *testing.T) {
+	db := openRecipeTestDB(t)
+	srv := newSkillsCraftServer(t, db)
+	ctx := context.Background()
+	const uid = int64(2000044)
+	if _, err := db.EnsureProfile(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	wire, err := srv.CreateItem(ctx, uid, "mn_lm_40809", "backpack", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.alignItemRowQty(ctx, wire)
+	line, err := srv.CreateItem(ctx, uid, "mono_15065", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.alignItemRowQty(ctx, line)
+	wireBefore := itemQtyByGUID(t, db, wire.GUID)
+	lineBefore := itemQtyByGUID(t, db, line.GUID)
+	sess := &Session{ID: 1, Userid: uid, Srv: srv, log: logging.Discard()}
+	hctx := &Ctx{Sess: sess, Main: 9, Sub: 1, CallID: 1, DecodeOK: true,
+		Tree: proto.Args524(craftObj8("craft_leader_shock_200", []craftSlot{{ItemID: "craft_mat_line", GUID: wire.GUID}}, 1)), Log: logging.Discard()}
+	body, ok := hCraft(hctx)
+	if !ok || u64Of(decodeTreeValue(t, srv, body).Fields[0].Num) == 1 {
+		t.Fatalf("明确指定前导线做减震引线应被拒绝: ok=%v", ok)
+	}
+	if got := itemQtyByGUID(t, db, wire.GUID); got != wireBefore {
+		t.Fatalf("前导线不得被消耗: before=%d after=%d", wireBefore, got)
+	}
+	if got := itemQtyByGUID(t, db, line.GUID); got != lineBefore {
+		t.Fatalf("不得静默换料扣掉合格主线: before=%d after=%d", lineBefore, got)
+	}
+	rows, err := db.ListItemsByContainers(ctx, uid, []string{"backpack"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ItemID == "leader_crafted_shock_200" {
+			t.Fatal("不应产出减震引线成品")
+		}
+	}
+}
+
+// 兼容锁：客户端提交库里查不到的临时 GUID 时，补扣扫描仍按类目从背包
+// 选取合格线材正常出货，不得被"明确选料拒绝"误伤。
+func TestCraftShockLeaderTempGUIDFallsBackToScan(t *testing.T) {
+	db := openRecipeTestDB(t)
+	srv := newSkillsCraftServer(t, db)
+	ctx := context.Background()
+	const uid = int64(2000045)
+	if _, err := db.EnsureProfile(ctx, uid); err != nil {
+		t.Fatal(err)
+	}
+	line, err := srv.CreateItem(ctx, uid, "mono_15065", "backpack", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.alignItemRowQty(ctx, line)
+	sess := &Session{ID: 1, Userid: uid, Srv: srv, log: logging.Discard()}
+	hctx := &Ctx{Sess: sess, Main: 9, Sub: 1, CallID: 1, DecodeOK: true,
+		Tree: proto.Args524(craftObj8("craft_leader_shock_200", []craftSlot{{ItemID: "craft_mat_line", GUID: "temp-guid-not-in-db"}}, 1)), Log: logging.Discard()}
+	body, ok := hCraft(hctx)
+	if !ok || u64Of(decodeTreeValue(t, srv, body).Fields[0].Num) != 1 {
+		t.Fatalf("临时 GUID 应按类目补扣正常出货: ok=%v", ok)
+	}
+	found := false
+	rows, err := db.ListItemsByContainers(ctx, uid, []string{"backpack"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ItemID == "leader_crafted_shock_200" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("补扣扫描应产出减震引线成品")
+	}
+}
+
+func itemQtyByGUID(t *testing.T, db *store.DB, guid string) int64 {
+	t.Helper()
+	row, err := db.GetItemByGUID(context.Background(), guid)
+	if err != nil || row == nil {
+		t.Fatalf("读取 %s: %v", guid, err)
+	}
+	return row.Qty
+}
