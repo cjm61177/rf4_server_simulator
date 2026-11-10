@@ -247,6 +247,13 @@ func (s *Server) itemBrokenForMount(ctx context.Context, row *store.Item) bool {
 // 处置。只有上报件缺失、空/zero GUID 或出厂内嵌件时才回退到最弱环裁决；
 // 已存在但不受支持的装配品类视为无效上报，避免任意物品触发断件。
 func (s *Server) breakLineOrRod(ctx context.Context, uid int64, rodGUID, reportedGUID string) (*gearBreakOutcome, error) {
+	return s.breakLineOrRodWithLineOut(ctx, uid, rodGUID, reportedGUID, 0)
+}
+
+// breakLineOrRodWithLineOut 与 breakLineOrRod 是同一套处置逻辑，额外带上客户端
+// 上报的实际放线米数（17/9 body 偏移 0x3f）：断主线时按它扣线，而不是按官服的
+// 清杯口径把整卷线一起判死。lineOutM 为 0 时退回 tunable / 清杯口径。
+func (s *Server) breakLineOrRodWithLineOut(ctx context.Context, uid int64, rodGUID, reportedGUID string, lineOutM float64) (*gearBreakOutcome, error) {
 	rodGUID = strings.TrimSpace(rodGUID)
 	reportedGUID = strings.TrimSpace(reportedGUID)
 	// 先确认这条上报本身合法：无效上报不能留下任何磨损，也不能把本竿的账
@@ -287,7 +294,7 @@ func (s *Server) breakLineOrRod(ctx context.Context, uid int64, rodGUID, reporte
 		case report.category == gearCatReel:
 			return s.damageReelLockOverload(ctx, uid, rodGUID, reportedGUID)
 		case sourceLineCategories[report.category]:
-			return s.breakLineTx(ctx, uid, rodGUID, reportedGUID, report.category)
+			return s.breakLineTxWithLineOut(ctx, uid, rodGUID, reportedGUID, report.category, lineOutM)
 		}
 	}
 	// 空/zero 或出厂内嵌件：回退到最弱环裁决。
@@ -299,7 +306,7 @@ func (s *Server) breakLineOrRod(ctx context.Context, uid int64, rodGUID, reporte
 	case "leader", "line", "leadcore", "connector":
 		// 前导/子线、铅芯前导、连接件都是终端承力件，断了走断子线逻辑：
 		// 主线长度不动，主线以下的终端件随断件丢失。
-		return s.breakLineTx(ctx, uid, rodGUID, dec.GUID, dec.Category)
+		return s.breakLineTxWithLineOut(ctx, uid, rodGUID, dec.GUID, dec.Category, lineOutM)
 	case "hook":
 		// 钩被拉直/拉断：摘除该终端件，不动主线长度。
 		return s.breakComponentTx(ctx, uid, rodGUID, dec.GUID, dec.Category)
@@ -336,16 +343,15 @@ func (s *Server) validateBreakReport(ctx context.Context, uid int64, rodGUID, re
 
 	part, err := s.DB.GetItemByGUID(ctx, reportedGUID)
 	if errors.Is(err, sql.ErrNoRows) {
-		// 出厂竿件只存在于母竿内，继续交由整组承力规则裁决。
-		tree, treeErr := s.ItemToTree(ctx, rod)
+		// 出厂竿件和拟饵出厂钩只存在于母物品树内，不是独立 item 行。
+		// 必须按整棵竿树深扫，不能只看竿坯/竿柄/导环三槽；否则客户端上报
+		// 拟饵钩 GUID 会被误判成“不存在”，17/9 连续失败，满力度也不断件。
+		embedded, treeErr := s.embeddedGUIDMountedOnRod(ctx, uid, rod, reportedGUID)
 		if treeErr != nil {
 			return validatedBreakReport{}, treeErr
 		}
-		for i := 0; i < 3; i++ {
-			if child := tree.Field(i).Val; child != nil &&
-				child.Field(fieldIdxByCS(child.Class, csGUID)).Hex == reportedGUID {
-				return validatedBreakReport{embedded: true}, nil
-			}
+		if embedded {
+			return validatedBreakReport{embedded: true}, nil
 		}
 		return validatedBreakReport{}, sql.ErrNoRows
 	}
@@ -380,6 +386,56 @@ func (s *Server) validateBreakReport(ctx context.Context, uid int64, rodGUID, re
 		return validatedBreakReport{terminalCategory: def.Category, category: def.Category}, nil
 	}
 	return validatedBreakReport{category: def.Category}, nil
+}
+
+// embeddedGUIDMountedOnRod 检查一个没有独立 item 行的 GUID 是否属于该竿的
+// 子物品树。出厂竿件在竿树里；拟饵出厂钩则在已挂拟饵自己的树里，因此不能只扫
+// 竿树顶层的三个槽。
+func (s *Server) embeddedGUIDMountedOnRod(ctx context.Context, uid int64, rod *store.Item, want string) (bool, error) {
+	if s == nil || s.DB == nil || rod == nil || rod.UID != uid || want == "" {
+		return false, nil
+	}
+	seen := map[string]bool{}
+	check := func(row *store.Item) (bool, error) {
+		if row == nil || row.UID != uid || seen[row.GUID] {
+			return false, nil
+		}
+		seen[row.GUID] = true
+		tree, err := s.ItemToTree(ctx, row)
+		if err != nil {
+			return false, err
+		}
+		return containsGUID(deepGUIDs(tree), want), nil
+	}
+	if ok, err := check(rod); err != nil || ok {
+		return ok, err
+	}
+	components, err := s.DB.ListRigComponents(ctx, rod.GUID)
+	if err != nil {
+		return false, err
+	}
+	for _, comp := range components {
+		row, rerr := s.DB.GetItemByGUID(ctx, comp.GUID)
+		if rerr != nil {
+			if errors.Is(rerr, sql.ErrNoRows) {
+				continue
+			}
+			return false, rerr
+		}
+		if ok, cerr := check(row); cerr != nil || ok {
+			return ok, cerr
+		}
+	}
+	if lureGUID := s.mountedLureGUID(ctx, rod.GUID); lureGUID != "" {
+		row, rerr := s.DB.GetItemByGUID(ctx, lureGUID)
+		if rerr == nil {
+			return check(row)
+		}
+		if !errors.Is(rerr, sql.ErrNoRows) {
+			return false, rerr
+		}
+	}
+	return false, nil
 }
 
 type breakReportQueryer interface {
@@ -1072,6 +1128,9 @@ func updateItemFieldsTx(ctx context.Context, db *store.DB, tx *sql.Tx, row *stor
 type lineLossPolicy struct {
 	// requestedM 本次要扣掉的米数（仅剪线使用）。
 	requestedM int64
+	// lineOutM 客户端上报的实际放线米数（17/9 断件时携带）：>0 时按它扣主线，
+	// 否则退回 tunable line_break_loss_m / 清杯口径。
+	lineOutM float64
 	// destroyLine 断主线语义：清杯后整条线丢失（17/9）；剪线只按米扣。
 	destroyLine bool
 	// eventLine 记录主线长度变化的事件名；eventLost 记录随线丢失的配件。
@@ -1103,8 +1162,14 @@ func (s *Server) rodLineLengthLeft(ctx context.Context, rodGUID string) int64 {
 }
 
 func (s *Server) breakLineTx(ctx context.Context, uid int64, rodGUID, brokenGUID string, breakCategory int64) (*gearBreakOutcome, error) {
+	return s.breakLineTxWithLineOut(ctx, uid, rodGUID, brokenGUID, breakCategory, 0)
+}
+
+// breakLineTxWithLineOut 同 breakLineTx，额外带上客户端上报的放线米数。
+func (s *Server) breakLineTxWithLineOut(ctx context.Context, uid int64, rodGUID, brokenGUID string, breakCategory int64, lineOutM float64) (*gearBreakOutcome, error) {
 	return s.lineLossTx(ctx, uid, rodGUID, brokenGUID, breakCategory, lineLossPolicy{
 		destroyLine: true,
+		lineOutM:    lineOutM,
 		eventLine:   damageEventLineBreak,
 		eventLost:   damageEventLostOnLineBreak,
 		reason:      "line_break",
@@ -1174,6 +1239,22 @@ func (s *Server) lineLossTx(ctx context.Context, uid int64, rodGUID, brokenGUID 
 					// 官服清杯口径：主线被拉断时整条丢失（含挂线配件）。
 					// afterLength=0 走下方"线耗尽删除"分支，f3 引用一并清理。
 					lossLength = beforeLength
+					// 断主线按实际放出量扣线：客户端上报值优先，其次 tunable
+					// line_break_loss_m。都没给才保持清杯口径。
+					applied := false
+					if policy.lineOutM > 0 {
+						// 客户端上报的实际放线量：断线时真正被拉出去的那段。
+						lossLength = int64(policy.lineOutM + 0.5)
+						applied = true
+					} else if fixed := s.tunableF("line_break_loss_m", 0); fixed > 0 {
+						lossLength = int64(fixed)
+						applied = true
+					}
+					// 上报了正数但不足 1 米：至少扣 1 米。否则 0.01 这种值
+					// 取整成 0，断线会变成"零损耗"。
+					if applied && lossLength < 1 {
+						lossLength = 1
+					}
 				}
 				if lossLength > beforeLength {
 					lossLength = beforeLength

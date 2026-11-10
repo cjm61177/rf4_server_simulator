@@ -92,7 +92,8 @@ body.notice-on #view-fish.on{height:max(600px,calc(100vh - 204px))}
 @media(max-width:980px){.duo{grid-template-columns:minmax(0,1fr)!important}.tunable-fields{grid-template-columns:1fr}}
 
 /* 参数行式布局：左标签+说明，右数值+操作，双列排布 */
-.tunable-group+.tunable-group{margin-top:18px}.tunable-group h3{font-size:14px;margin:0 0 2px}.tunable-fields{display:grid;grid-template-columns:1fr 1fr;gap:0 34px}.tunable-field{display:flex;gap:14px;align-items:center;justify-content:space-between;min-width:0;padding:9px 0;border-bottom:1px solid var(--line)}.tunable-field>div:first-child{flex:1;min-width:0}.tunable-field label{display:block;color:var(--text);margin:0;font-weight:600;overflow-wrap:anywhere}.tunable-field .tunable-hint{margin-top:2px}.tunable-field>div:last-child{display:flex;gap:8px;align-items:center;flex:none}.tunable-field input{width:112px;min-width:0;flex:none;padding:7px 9px}.tunable-field button{flex:none}.section-head{flex-wrap:wrap}
+.tunable-group+.tunable-group{margin-top:18px}.tunable-group h3{font-size:14px;margin:0 0 2px}.tunable-fields{display:grid;grid-template-columns:1fr 1fr;gap:0 34px}.tunable-field{display:flex;gap:14px;align-items:center;justify-content:space-between;min-width:0;padding:9px 0;border-bottom:1px solid var(--line)}.tunable-field.tunable-wide{grid-column:1/-1}.tunable-field>div:first-child{flex:1;min-width:0}.tunable-field label{display:block;color:var(--text);margin:0;font-weight:600;overflow-wrap:anywhere}.tunable-field .tunable-hint{margin-top:2px}.tunable-field>div:last-child{display:flex;gap:8px;align-items:center;flex:none}.tunable-field.tunable-wide>div:last-child{flex-wrap:wrap;justify-content:flex-end}.tunable-field input{width:112px;min-width:0;flex:none;padding:7px 9px}.tunable-field button{flex:none}.section-head{flex-wrap:wrap}
+.grade-ratio-card{grid-column:1/-1;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:#0b1724}.grade-ratio-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;margin-bottom:12px}.grade-ratio-head b{font-size:13px}.grade-ratio-summary{font-size:12px;color:var(--muted);overflow-wrap:anywhere}.grade-ratio-bar{display:flex;height:10px;border-radius:999px;overflow:hidden;background:#08111b;margin:10px 0 14px}.grade-ratio-bar i{display:block;min-width:0;transition:width .16s}.grade-ratio-row{display:grid;grid-template-columns:78px minmax(120px,1fr) 58px;align-items:center;gap:10px;margin:8px 0}.grade-ratio-row input[type=range]{width:100%;padding:0;border:0;box-shadow:none;accent-color:var(--accent)}.grade-ratio-row .share{font-family:Consolas,monospace;font-size:12px;text-align:right;color:var(--text)}.grade-ratio-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:12px}@media(max-width:720px){.grade-ratio-row{grid-template-columns:64px minmax(90px,1fr) 52px}.grade-ratio-head{display:block}.grade-ratio-summary{margin-top:6px}}
 #storeSummary{max-width:100%;overflow-wrap:anywhere}
 #playerHappyHour{overflow-wrap:anywhere}
 .update-banner{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 18px;padding:12px 16px;border:1px solid var(--accent);border-radius:12px;background:#0e2438;color:#bfe3ff;font-size:13px}.update-banner[hidden]{display:none}.update-banner.muted{border-color:var(--line);background:#101c2b;color:var(--muted)}.update-banner.warn{border-color:var(--warn);background:#3a2b14;color:#ffd9a0}.update-banner .update-actions{display:flex;gap:8px;margin-left:auto;align-items:center}.update-banner a{text-decoration:none;display:inline-block}
@@ -299,7 +300,7 @@ async function loadDashboardSide(){
   const [audits,tuns]=await Promise.all([api('/api/audit?limit=5'),api('/api/tunables')]);
   $('#recentAudit').innerHTML=audits.map(e=>`<div class="rule-mini"><span class="muted">${esc(timeText(e.TS??e.ts).slice(5))}</span><span class="tag blue">${esc(e.Action??e.action)}</span><span class="mono" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc((e.Target??e.target)||'')}</span></div>`).join('')||'<div class="empty">还没有操作记录</div>';
   const rules={fish_bait_rules_enabled:'新吃饵逻辑',fish_distribution_enabled:'鱼群分布',fish_weather_enabled:'天气鱼口',happy_hour_enabled:'欢乐时光',hook_nibble_enabled:'嘬饵机制'};
-  $('#ruleOverview').innerHTML=Object.entries(rules).map(([k,n])=>{const on=tuns[k]===undefined?(k==='happy_hour_enabled'||k==='hook_nibble_enabled'):tuns[k]==='1';return `<div class="rule-mini"><span>${n}</span><span class="pill ${on?'ok':''}">${on?'开启':'关闭'}</span></div>`}).join('')||'<div class="empty">读取失败</div>';
+  $('#ruleOverview').innerHTML=Object.entries(rules).map(([k,n])=>{const on=tuns[k]===undefined?k==='happy_hour_enabled':tuns[k]==='1';return `<div class="rule-mini"><span>${n}</span><span class="pill ${on?'ok':''}">${on?'开启':'关闭'}</span></div>`}).join('')||'<div class="empty">读取失败</div>';
 }
 // 参数三件套：中文标签 + 输入框 + 可见的一行说明（第 4 项为默认值，第 5 项为说明）
 const EVENT_BRANCHES_DEFAULT='9,10,11,12,13,14,15,16,17,18,19,20';
@@ -313,13 +314,15 @@ const TUNABLE_DEFS=[
   ['bait_pref_weight_shift','饵效偏大体型',1,'越大越偏向个体大的鱼咬钩'],
   ['fish_weight_scale','鱼体重倍率',1,'全地图鱼重整体缩放，2=两倍重'],
   ['fish_weight_cap','鱼重受钓具上限',0,'1=超出钓具负重的鱼按上限截断；0=不限制'],
-  ['hook_nibble_enabled','嘬饵机制',1,'1=保留钩型嘬饵判定；0=普通鱼和奖杯鱼首次抬竿不再判嘬饵。中钩后的保持率倍率仍生效'],
-  ['hook_spawn_match_strength','钩型发鱼软匹配强度',1,'0=关闭；1=标准；2=更偏向与钩型匹配的鱼重档位。只影响发鱼，不改后台咬口/保持率倍率'],
-  ['grade_ratio_enabled','档位比例开关',0,'0=保持原对数正态标定；1=按下列比例出鱼'],
-  ['grade_pct_below','未达标比例（%）',3,'体重低于合格线的占比'],
-  ['grade_pct_qualified','合格比例（%）',87.5,'合格档占比；缺档位的份额按其余档归一化'],
-  ['grade_pct_trophy','奖杯比例（%）',9,'奖杯档占比'],
-  ['grade_pct_super','蓝冠比例（%）',0.5,'蓝冠档占比'],
+  ['electric_locked_multiplier','电轮锁轮倍率',3,'电轮锁轮有效承力=当前机械承力与电机承力较小者的该倍率；默认3'],
+  ['electric_motor_kg_per_power','电轮电机功率折算',1,'电机功率映射为承力公斤的系数；默认1，用于后续实机校准'],
+  ['hook_nibble_enabled','嘬饵机制',0,'0=默认关闭，普通鱼和奖杯鱼首次抬竿不判嘬饵；1=恢复钩型嘬饵判定。中钩后的保持率倍率始终生效'],
+  ['hook_spawn_match_strength','钩型发鱼软匹配强度',0,'0=默认关闭；1=标准；2=更偏向与钩型匹配的鱼重档位。只影响发鱼，不改后台咬口/保持率倍率'],
+  ['grade_ratio_enabled','档位比例开关',1,'三选一发鱼模式之一（在「发鱼模式」卡片切换）；开启时按四档滑杆出鱼并覆盖鱼猎阶段权重与钩型发鱼软匹配'],
+  ['grade_pct_below','未达标权重',3,'未达标档的相对权重，保存时自动归一'],
+  ['grade_pct_qualified','合格权重',87.5,'合格档的相对权重，保存时自动归一'],
+  ['grade_pct_trophy','奖杯权重',9,'奖杯档的相对权重，保存时自动归一'],
+  ['grade_pct_super','蓝冠权重',0.5,'蓝冠档的相对权重，保存时自动归一'],
   ['fight_power_scale','搏斗拉力倍率',1,'越低鱼挣扎越小、越不易断线；1=原版'],
   ['xp_gain','经验倍率',1,'结算经验整体缩放，1.5=多 50% 经验'],
   ['release_xp_ratio','放生经验比例',0.5,'放生时拿到入护经验的几成，0.5=一半'],
@@ -575,25 +578,159 @@ function resetBaitRule(name){
 }
 
 
+const GRADE_RATIO_KEYS=['grade_pct_below','grade_pct_qualified','grade_pct_trophy','grade_pct_super'];
+const GRADE_RATIO_META=[['未达标','#7c8fa3'],['合格','#38a7ff'],['奖杯','#f2b84b'],['蓝冠','#a78bfa']];
+const GRADE_RATIO_DEFAULTS=[3,87.5,9,.5];
+function gradeRatioValues(values){
+ const total=values.reduce((n,v)=>n+Math.max(0,Number(v)||0),0);
+ if(total<=0)return [0,0,0,0];
+ return values.map(v=>Math.max(0,Number(v)||0)*100/total);
+}
+function gradeRatioPercentValues(values){
+ const shares=gradeRatioValues(values);
+ const rounded=shares.map(v=>Math.round(v*100)/100);
+ const diff=Math.round((100-rounded.reduce((n,v)=>n+v,0))*100)/100;
+ const largest=rounded.indexOf(Math.max(...rounded));
+ if(largest>=0)rounded[largest]=Math.round((rounded[largest]+diff)*100)/100;
+ return rounded;
+}
+function gradeRatioControl(t){
+ const raw=GRADE_RATIO_KEYS.map((key,i)=>{
+  const v=parseFloat(String(t[key]??GRADE_RATIO_DEFAULTS[i]));
+  return Number.isFinite(v)&&v>0?v:0;
+ });
+ if(raw.every(v=>v<=0))raw.splice(0,raw.length,...GRADE_RATIO_DEFAULTS);
+ const shares=gradeRatioValues(raw);
+ const rows=GRADE_RATIO_KEYS.map((key,i)=>`<div class="grade-ratio-row"><label for="gr_${key}" style="margin:0;color:${GRADE_RATIO_META[i][1]}">${GRADE_RATIO_META[i][0]}</label><input type="range" min="0" max="100" step="0.1" id="gr_${key}" value="${raw[i]}" oninput="gradeRatioPreview()"><span class="share" id="gr_share_${i}">${shares[i].toFixed(1)}%</span></div>`).join('');
+ const bar=shares.map((v,i)=>`<i style="width:${v}%;background:${GRADE_RATIO_META[i][1]}"></i>`).join('');
+ return `<div class="grade-ratio-card"><div class="grade-ratio-head"><div><b>档位比例·四档相对权重</b><div class="tunable-hint">拖动滑杆即可，不需要手动凑满 100%。保存后自动换算成总和 100% 的占比；鱼种缺少档位时，服务端再按可用档位归一。</div></div><div class="grade-ratio-summary" id="gr_summary">实际占比：${shares.map(v=>v.toFixed(1)+'%').join(' / ')}</div></div><div class="grade-ratio-bar" id="gr_bar">${bar}</div>${rows}<div class="grade-ratio-actions"><button class="btn good sm" onclick="saveGradeRatio()">保存四档比例</button><button class="btn alt sm" onclick="resetGradeRatio()">恢复默认比例</button></div></div>`;
+}
+function gradeRatioPreview(){
+ const values=GRADE_RATIO_KEYS.map(key=>parseFloat($('#gr_'+key).value)||0);
+ const shares=gradeRatioValues(values);
+ shares.forEach((share,i)=>{const el=$('#gr_share_'+i);if(el)el.textContent=share.toFixed(1)+'%';const seg=$('#gr_bar')?.children[i];if(seg)seg.style.width=share+'%'});
+ const summary=$('#gr_summary');
+ if(summary)summary.textContent=values.some(v=>v>0)?'实际占比：'+shares.map(v=>v.toFixed(1)+'%').join(' / '):'至少保留一个档位大于 0';
+}
+async function saveGradeRatio(){
+ const values=GRADE_RATIO_KEYS.map(key=>parseFloat($('#gr_'+key).value)||0);
+ const total=values.reduce((n,v)=>n+Math.max(0,v),0);
+ if(total<=0){toast('至少保留一个档位大于 0','bad');return}
+ const shares=gradeRatioPercentValues(values);
+ for(let i=0;i<GRADE_RATIO_KEYS.length;i++){
+  const value=String(shares[i]);
+  await api('/api/tunables',{method:'POST',body:JSON.stringify({key:GRADE_RATIO_KEYS[i],value})});
+ }
+ toast('已保存：'+shares.map(v=>v.toFixed(1)+'%').join(' / ')+'，最多 30 秒生效');
+ await loadTunables();
+}
+async function resetGradeRatio(){
+ GRADE_RATIO_KEYS.forEach((key,i)=>{const el=$('#gr_'+key);if(el)el.value=GRADE_RATIO_DEFAULTS[i]});
+ gradeRatioPreview();
+ await saveGradeRatio();
+}
+// ---- 发鱼模式三选一（档位比例 / 鱼猎四阶段 / 两档制）----
+const SPAWN_MODE_OPTIONS=[
+ ['grade_ratio','档位比例','按下方四档滑杆出鱼，覆盖鱼猎阶段权重与钩型发鱼软匹配'],
+ ['fish_hunt','鱼猎四阶段','淡水按日常/聚鱼/发窝/巨物四阶段出鱼；海钓、路亚同机制'],
+ ['two_stage','两档制（底浮）','底钓/浮钓只有日常与打窝两档，权重见下方滑杆；海钓、路亚仍走四阶段']
+];
+const TWO_STAGE_GROUPS={
+ daily:{keys:['two_stage_daily_below','two_stage_daily_qualified','two_stage_daily_trophy','two_stage_daily_super'],
+        defaults:[10,86.5,3,.5],title:'日常阶段·四档占比',
+        hint:'不打窝（或窝料/环境/昼夜未达标）时按这组占比出鱼'},
+ baited:{keys:['two_stage_baited_below','two_stage_baited_qualified','two_stage_baited_trophy','two_stage_baited_super'],
+         defaults:[1,92,6,1],title:'打窝阶段·四档占比',
+         hint:'窝料就位进入打窝阶段后按这组占比出鱼；奖杯保底与脱钩补偿照常生效'}
+};
+function spawnModeOf(t){
+ if(String(t.grade_ratio_enabled??'')==='1')return 'grade_ratio';
+ if(String(t.two_stage_hunt_enabled??'')==='1')return 'two_stage';
+ if(String(t.fish_hunt_enabled??'')==='1')return 'fish_hunt';
+ return 'legacy';
+}
+async function saveSpawnMode(mode){
+ const opt=SPAWN_MODE_OPTIONS.find(o=>o[0]===mode);
+ if(!opt)return;
+ await api('/api/fish/spawn_mode',{method:'POST',body:JSON.stringify({mode})});
+ toast('发鱼模式已切换为「'+opt[1]+'」，最多 30 秒生效');
+ await loadTunables();
+}
+function twoStageSliderCard(g,t){
+ const cfg=TWO_STAGE_GROUPS[g];
+ const raw=cfg.keys.map((key,i)=>{const v=parseFloat(String(t[key]??cfg.defaults[i]));return Number.isFinite(v)&&v>0?v:0});
+ if(raw.every(v=>v<=0))raw.splice(0,raw.length,...cfg.defaults);
+ const shares=gradeRatioValues(raw);
+ const rows=cfg.keys.map((key,i)=>`<div class="grade-ratio-row"><label for="ts_${g}_${key}" style="margin:0;color:${GRADE_RATIO_META[i][1]}">${GRADE_RATIO_META[i][0]}</label><input type="range" min="0" max="100" step="0.1" id="ts_${g}_${key}" value="${raw[i]}" oninput="twoStagePreview('${g}')"><span class="share" id="ts_${g}_share_${i}">${shares[i].toFixed(1)}%</span></div>`).join('');
+ const bar=shares.map((v,i)=>`<i style="width:${v}%;background:${GRADE_RATIO_META[i][1]}"></i>`).join('');
+ return `<div class="grade-ratio-card"><div class="grade-ratio-head"><div><b>${cfg.title}</b><div class="tunable-hint">${cfg.hint}。保存后自动换算成总和 100% 的占比。</div></div><div class="grade-ratio-summary" id="ts_${g}_summary">实际占比：${shares.map(v=>v.toFixed(1)+'%').join(' / ')}</div></div><div class="grade-ratio-bar" id="ts_${g}_bar">${bar}</div>${rows}<div class="grade-ratio-actions"><button class="btn good sm" onclick="saveTwoStage('${g}')">保存本组比例</button><button class="btn alt sm" onclick="resetTwoStage('${g}')">恢复默认</button></div></div>`;
+}
+function twoStagePreview(g){
+ const cfg=TWO_STAGE_GROUPS[g];
+ const values=cfg.keys.map(key=>parseFloat($('#ts_'+g+'_'+key).value)||0);
+ const shares=gradeRatioValues(values);
+ shares.forEach((share,i)=>{const el=$('#ts_'+g+'_share_'+i);if(el)el.textContent=share.toFixed(1)+'%';const seg=$('#ts_'+g+'_bar')?.children[i];if(seg)seg.style.width=share+'%'});
+ const summary=$('#ts_'+g+'_summary');
+ if(summary)summary.textContent=values.some(v=>v>0)?'实际占比：'+shares.map(v=>v.toFixed(1)+'%').join(' / '):'至少保留一个档位大于 0';
+}
+async function saveTwoStage(g){
+ const cfg=TWO_STAGE_GROUPS[g];
+ const values=cfg.keys.map(key=>parseFloat($('#ts_'+g+'_'+key).value)||0);
+ const total=values.reduce((n,v)=>n+Math.max(0,v),0);
+ if(total<=0){toast('至少保留一个档位大于 0','bad');return}
+ const shares=gradeRatioPercentValues(values);
+ for(let i=0;i<cfg.keys.length;i++){
+  await api('/api/tunables',{method:'POST',body:JSON.stringify({key:cfg.keys[i],value:String(shares[i])})});
+ }
+ toast('已保存：'+shares.map(v=>v.toFixed(1)+'%').join(' / ')+'，最多 30 秒生效');
+ await loadTunables();
+}
+async function resetTwoStage(g){
+ const cfg=TWO_STAGE_GROUPS[g];
+ cfg.keys.forEach((key,i)=>{const el=$('#ts_'+g+'_'+key);if(el)el.value=cfg.defaults[i]});
+ twoStagePreview(g);
+ await saveTwoStage(g);
+}
+function spawnModeControl(t){
+ const mode=spawnModeOf(t);
+ const btns=SPAWN_MODE_OPTIONS.map(([m,label,hint])=>`<button class="btn sm" style="min-width:180px;${mode===m?'background:#2f7d4f;border-color:#2f7d4f':'opacity:.6'}" onclick="askSpawnMode('${m}')" title="${hint}">${label}${mode===m?'：当前':''}</button>`).join('');
+ const legacyNote=mode==='legacy'?'<div class="tunable-hint" style="margin-top:8px">当前三个开关全部关闭：发鱼回退旧的对数正态体重采样路径。请选择上面三种模式之一。</div>':'';
+ const fishHuntNote=mode==='fish_hunt'?'<div class="tunable-hint" style="margin-top:8px">鱼猎四阶段权重内置为固定值（日常 74.7/24/1/0.3 · 聚鱼 54.5/43/2/0.5 · 发窝 30/61.2/6.8/2 · 巨物 10/64/20/6），暂无滑杆；奖杯保底与脱钩补偿照常生效。</div>':'';
+ let body='';
+ if(mode==='grade_ratio')body=gradeRatioControl(t);
+ else if(mode==='two_stage')body=twoStageSliderCard('daily',t)+twoStageSliderCard('baited',t);
+ return `<div class="tunable-field tunable-wide"><div><label>发鱼模式</label><div class="tunable-hint">三种模式互斥，点击即整体切换（写入三个开关，单事务保存）；切换后最多 30 秒生效。海钓与路亚在三种模式下都走四阶段。</div></div><div style="display:flex;gap:8px;flex-wrap:wrap">${btns}</div>${legacyNote}${fishHuntNote}</div>${body}`;
+}
+async function askSpawnMode(mode){
+ const opt=SPAWN_MODE_OPTIONS.find(o=>o[0]===mode);
+ if(!opt)return;
+ const cur=spawnModeOf(lastTunables);
+ if(cur===mode){toast('当前已是「'+opt[1]+'」模式');return}
+ askConfirm('切换发鱼模式','切换为「'+opt[1]+'」？三种模式互斥，会整体改写档位开关组合。',async()=>{
+  try{await saveSpawnMode(mode)}catch(e){toast(e.message,'bad')}
+ });
+}
+let lastTunables={};
 async function loadTunables(){
  const t=await api('/api/tunables');
+ lastTunables=t;
  // 行式布局：左=标签+说明，右=数值+保存/恢复默认，双列排布
  const field=key=>{
   const [,label,def,hint]=TUNABLE_DEFS.find(x=>x[0]===key);
   if(key==='event_anniversary_enabled'||key==='event_newyear_enabled'){
    const on=String(t[key]??def)==='1';
    const tag=key==='event_newyear_enabled'?'新年任务':'周年活动';
-   return `<div class="tunable-field"><div><label for="tun_${key}">${esc(label)}</label><div class="tunable-hint">${esc(hint)}；服务端最多 30 秒生效，活动节点只在全新登录下发，切换后要完整退出游戏重登。</div></div><div><button class="btn sm" id="tun_${key}" style="min-width:230px;${on?'background:#2f7d4f;border-color:#2f7d4f':'opacity:.6'}" onclick="saveEventSwitch('${key}',${on?0:1})">${on?tag+'：开（点击关闭）':tag+'：关（点击开启）'}</button></div></div>`;
+   return `<div class="tunable-field tunable-wide"><div><label for="tun_${key}">${esc(label)}</label><div class="tunable-hint">${esc(hint)}；服务端最多 30 秒生效，活动节点只在全新登录下发，切换后要完整退出游戏重登。</div></div><div><button class="btn sm" id="tun_${key}" style="min-width:230px;${on?'background:#2f7d4f;border-color:#2f7d4f':'opacity:.6'}" onclick="saveEventSwitch('${key}',${on?0:1})">${on?tag+'：开（点击关闭）':tag+'：关（点击开启）'}</button></div></div>`;
   }
   if(key==='event_branches'){
    const val=String(t[key]??def);
-   return `<div class="tunable-field"><div><label for="tun_event_branches">${esc(label)}</label><div class="tunable-hint">${esc(hint)}；当前 <b>${esc(val)||'（空）'}</b>。9/10=2024新年、11/12=7周年、13/14=2025新年、15/16=8周年、17/18=2026新年、19/20=9周年。保存后最多 30 秒生效，需完整退出游戏重登。</div></div><div><input type="text" id="tun_event_branches" value="${esc(val)}" style="min-width:230px" placeholder="9,10,..."><button class="btn sm" onclick="saveEventBranches()">保存</button><button class="btn alt sm" onclick="resetEventBranches()">恢复默认</button></div></div>`;
+   return `<div class="tunable-field tunable-wide"><div><label for="tun_event_branches">${esc(label)}</label><div class="tunable-hint">${esc(hint)}；当前 <b>${esc(val)||'（空）'}</b>。9/10=2024新年、11/12=7周年、13/14=2025新年、15/16=8周年、17/18=2026新年、19/20=9周年。保存后最多 30 秒生效，需完整退出游戏重登。</div></div><div><input type="text" id="tun_event_branches" value="${esc(val)}" style="min-width:230px" placeholder="9,10,..."><button class="btn sm" onclick="saveEventBranches()">保存</button><button class="btn alt sm" onclick="resetEventBranches()">恢复默认</button></div></div>`;
   }
   if(key==='event_anniversary_end_unix'){
    const ts=Number(String(t[key]??def))||def;
    const iso=new Date(ts*1000).toISOString().slice(0,16);
    const shown=iso.replace('T',' ')+' UTC';
-   return `<div class="tunable-field"><div><label for="tun_event_end">${esc(label)}</label><div class="tunable-hint">${esc(hint)}；当前 <b>${shown}</b>。保存后最多 30 秒生效，活动节点只在全新登录下发，改完要完整退出游戏重登。</div></div><div><input type="datetime-local" id="tun_event_end" value="${iso}" style="min-width:230px"><button class="btn sm" onclick="saveEventEnd()">保存</button><button class="btn alt sm" onclick="resetEventEnd(${def})">恢复默认</button></div></div>`;
+   return `<div class="tunable-field tunable-wide"><div><label for="tun_event_end">${esc(label)}</label><div class="tunable-hint">${esc(hint)}；当前 <b>${shown}</b>。保存后最多 30 秒生效，活动节点只在全新登录下发，改完要完整退出游戏重登。</div></div><div><input type="datetime-local" id="tun_event_end" value="${iso}" style="min-width:230px"><button class="btn sm" onclick="saveEventEnd()">保存</button><button class="btn alt sm" onclick="resetEventEnd(${def})">恢复默认</button></div></div>`;
   }
   if(key==='fish_hooked_chat'){
    const on=parseFloat(String(t[key]??def))>0;
@@ -612,10 +749,11 @@ async function loadTunables(){
  const group=(title,sub,keys)=>'<section class="tunable-group"><h3>'+esc(title)+'<small style="font-weight:400;margin-left:8px;color:var(--muted)">'+esc(sub)+'</small></h3><div class="tunable-fields">'+keys.map(field).join('')+'</div></section>';
  $('#paramsBody').innerHTML=
   group('玩法手感','咬钩快慢、饵料偏好、鱼的大小与挣扎力度',['bite_probability','bite_delay_fixed','bite_delay_scale','bite_delay_max','bite_delay_lure_max','bait_pref_scale','bait_pref_weight_shift','fish_weight_scale','fish_weight_cap','fight_power_scale'])
-  +group('钩型与咬口','嘬饵总开关与发鱼软匹配；后台钩型倍率仍独立生效',['hook_nibble_enabled','hook_spawn_match_strength'])
+  +group('电轮参数','电轮锁轮倍率与电机功率折算；改后最多 30 秒生效',['electric_locked_multiplier','electric_motor_kg_per_power'])
+  +group('钩型与咬口','嘬饵与发鱼软匹配默认关闭；后台钩型倍率仍独立生效',['hook_nibble_enabled','hook_spawn_match_strength'])
   +group('经验与结算','改后只对新结算的鱼生效，已入护的不重算',['xp_gain','release_xp_ratio'])
   +group('跑鱼提示','上鱼失败时的聊天播报样式',['fish_escape_taunt'])
-  +group('鱼获档位比例','按四档占比出鱼；缺某档阈值时其余档自动归一',['grade_ratio_enabled','grade_pct_below','grade_pct_qualified','grade_pct_trophy','grade_pct_super'])
+  +`<section class="tunable-group"><h3>发鱼模式<small style="font-weight:400;margin-left:8px;color:var(--muted)">档位比例 · 鱼猎四阶段 · 两档制（底浮）三选一；选中哪种就显示哪组的权重设置</small></h3><div class="tunable-fields">${spawnModeControl(t)}</div></section>`
   +group('钓获礼包','钓上鱼当场开箱，奖励直接进背包并播报',['loot_box_enabled','loot_box_chance','loot_box_trophy_guarantee'])
   +group('聊天通知','跑鱼提示与上钩播报分别设置；保存后最多 30 秒生效',['fish_escape_taunt','fish_hooked_chat'])
   +group('卡牌掉落','钓获结算掉收藏卡；集齐卡组自动发奖座',['card_drop_common','card_drop_rare','card_drop_super'])

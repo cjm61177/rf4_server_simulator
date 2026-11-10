@@ -46,6 +46,7 @@ const (
 	tunableSunEnergyRegenMult   = "condition_sun_energy_regen_mult"
 	tunableGearEnergyRegenCap   = "condition_gear_energy_regen_cap"
 	tunableGearEnergyMaxCap     = "condition_gear_energy_max_cap"
+	tunableEnergyRegenFoodCost  = "condition_energy_regen_food_cost"
 
 	// 健康（f4）动态：饥寒压力掉血、压力消失后自愈。
 	tunableHealthDecayPerHour     = "condition_health_decay_per_hour"
@@ -60,7 +61,9 @@ const (
 // 精力恢复 2.0/h 是抓包"15 秒恢复 0.0086"的量级下界；其余为占位标定。
 const (
 	defHungerDecayPerHour = 0.24
-	defEnergyRegenPerHour = 2.0
+	// 满饱食度时约 30 秒回满一管（0.85 / 100 * 3600 ≈ 30.6s）：
+	// 挖掘/搏鱼的消耗靠“吃饱→快速回精力→再消耗”的循环，不再等几十分钟。
+	defEnergyRegenPerHour = 100.0
 	defEnergyMax          = store.DefaultPlayerConditionPrimary
 	defHungerRegenFloor   = 0.25
 	defCastEnergyCost     = 0.01
@@ -87,6 +90,8 @@ const (
 	// 装备被动加成封顶。
 	defGearEnergyRegenCap = 0.5
 	defGearEnergyMaxCap   = 0.15
+	// 恢复精力要消耗饱食度：每恢复 1 点精力扣这么多饱食度（0 关闭）。
+	defEnergyRegenFoodCost = 0.5
 
 	// 健康（f4）动态。全部为自设计标定值：官服没有任何"健康下降/恢复"
 	// 样本，取值只保证"饿到快见底、冻到很不舒服才开始掉，且掉得比恢复慢"。
@@ -130,6 +135,7 @@ type conditionParams struct {
 	SunEnergyRegenMult   float64
 	GearEnergyRegenCap   float64
 	GearEnergyMaxCap     float64
+	EnergyRegenFoodCost  float64
 
 	// 健康（f4）动态。
 	HealthDecayPerHour     float64
@@ -164,6 +170,7 @@ func (s *Server) conditionParams() conditionParams {
 		SunEnergyRegenMult:   s.tunableF(tunableSunEnergyRegenMult, defSunEnergyRegenMult),
 		GearEnergyRegenCap:   s.tunableF(tunableGearEnergyRegenCap, defGearEnergyRegenCap),
 		GearEnergyMaxCap:     s.tunableF(tunableGearEnergyMaxCap, defGearEnergyMaxCap),
+		EnergyRegenFoodCost:  s.tunableF(tunableEnergyRegenFoodCost, defEnergyRegenFoodCost),
 
 		HealthDecayPerHour:     s.tunableF(tunableHealthDecayPerHour, defHealthDecayPerHour),
 		HealthRegenPerHour:     s.tunableF(tunableHealthRegenPerHour, defHealthRegenPerHour),
@@ -231,7 +238,13 @@ func advancePlayerCondition(cur store.PlayerCondition, now float64, p conditionP
 		regen *= p.SunEnergyRegenMult
 	}
 	factor := p.HungerRegenFloor + (1-p.HungerRegenFloor)*out.Secondary
+	prevEnergy := out.Primary
 	out.Primary = clampFloat(cur.Primary+regen*factor*elapsedH, 0, p.EnergyMax)
+	// 恢复精力要吃掉饱食度：按实际回复量折算，系数为 tunable（0 关闭）。
+	// 放在饱食度衰减之后、健康判定之前，保证同一拍里 f1 与健康压力源自洽。
+	if gained := out.Primary - prevEnergy; gained > 0 && p.EnergyRegenFoodCost > 0 {
+		out.Secondary = clampFloat(out.Secondary-gained*p.EnergyRegenFoodCost, 0, 1)
+	}
 	equilibrium := 1.0
 	if env.Rain {
 		equilibrium -= p.ComfortRainPenalty
