@@ -147,6 +147,7 @@ func (s *Server) settleCatchOnceWithQualification(ctx context.Context, uid int64
 	state := s.fishingStateForFish(uid, f)
 	state.mu.Lock()
 	gear := state.GearGuid
+	bait := state.Bait
 	if !f.HappyHourKnown {
 		if sess := s.liveSessionByUID(uid); sess != nil {
 			f.HappyHour = sess.currentHappyHour().Active
@@ -170,7 +171,7 @@ func (s *Server) settleCatchOnceWithQualification(ctx context.Context, uid int64
 	var deckPlan *deckSyncPlan
 	var deckGUIDs []string
 	if s.rollCardDrop(ctx, f) {
-		cardItem, err = s.prepareNewCard(ctx, uid, f)
+		cardItem, err = s.prepareNewCard(ctx, uid, f, bait)
 		if err != nil {
 			s.log.Warn("掉卡构造失败，本次不产卡", "uid", uid, "fish", shortGUID(f.FishGUID), "err", err)
 			cardItem = nil

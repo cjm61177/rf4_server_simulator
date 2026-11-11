@@ -85,7 +85,7 @@ func TestPrepareNewCardEmbedsFishSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	fish := cardTestFish("66666666666666666666666666666666", "carp")
-	card, err := srv.prepareNewCard(ctx, uid, fish)
+	card, err := srv.prepareNewCard(ctx, uid, fish, "bait_worm")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,6 +103,14 @@ func TestPrepareNewCardEmbedsFishSnapshot(t *testing.T) {
 	derived := uuid5OIDHex(card.GUID + "/card_fish")
 	if derived == strings.ToLower(fish.FishGUID) || !strings.Contains(card.FieldsJSON, derived) {
 		t.Fatalf("内嵌鱼 guid 未按卡 guid 派生（与鱼护同 guid 会串标本）: derived=%s", derived)
+	}
+	// 卡详情页的钓获地点/饵料两行来自嵌树 f10/f8：漏填客户端缺行
+	// （2026-11-11 实机），嵌树必须带上 LocLevel 与结算传入的饵料。
+	if !strings.Contains(card.FieldsJSON, fish.LocLevel) {
+		t.Fatalf("内嵌鱼快照缺钓获地点 %s", fish.LocLevel)
+	}
+	if !strings.Contains(card.FieldsJSON, "bait_worm") {
+		t.Fatal("内嵌鱼快照缺饵料快照")
 	}
 	// 卡行必须与卡组行同柜（收藏册容器 18）：卡牌页窗口 lagfnoohjip 用
 	// 容器 18 管理器按静态类别 78 过滤，卡行放 backpack 则卡牌页恒空

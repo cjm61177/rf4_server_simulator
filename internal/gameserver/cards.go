@@ -57,9 +57,12 @@ func (s *Server) rollCardDrop(ctx context.Context, f *RolledFish) bool {
 }
 
 // prepareNewCard 构造含渔获快照的卡物品（事务外）。f0 peipahjmida 嵌
-// 与结算卡同一棵 25 鱼树；鱼 guid 由卡 guid 派生，避免与鱼护内原鱼同 guid
-// （同标本板 mountedFishTreeTx 手法）。
-func (s *Server) prepareNewCard(ctx context.Context, uid int64, f *RolledFish) (*store.Item, error) {
+// 与结算卡同一棵 25 鱼树：地点取 f.LocLevel（咬钩时写入的当前地图）、
+// 饵料 bait 由结算调用方从 FishState.Bait 快照传入（管理发卡传空）——
+// 卡详情页的钓获地点/饵料两行就来自这两个字段，漏填会缺行（2026-11-11
+// 实机：卡详情缺字段，嵌树 f8/f10 恒 null）。鱼 guid 由卡 guid 派生，
+// 避免与鱼护内原鱼同 guid（同标本板 mountedFishTreeTx 手法）。
+func (s *Server) prepareNewCard(ctx context.Context, uid int64, f *RolledFish, bait string) (*store.Item, error) {
 	card, err := s.prepareNewItem(ctx, uid, cardItemIDPrefix+f.Species, tcDeckContainer, 1, "")
 	if err != nil {
 		return nil, err
@@ -67,9 +70,10 @@ func (s *Server) prepareNewCard(ctx context.Context, uid int64, f *RolledFish) (
 	entry := &store.KeepnetEntry{
 		EchoGUID: f.FishGUID, Species: f.Species, NameZh: f.Name,
 		WeightG: f.WeightG, LengthM: f.LengthM, Cat: f.Grade,
-		TS: float64(time.Now().UnixNano()) / 1e9,
+		KeepBait: bait,
+		TS:       float64(time.Now().UnixNano()) / 1e9,
 	}
-	fish := buildKeepnet25(entry, "", s.rarityOf25(f.Species), s.fishModelVariantFor(f))
+	fish := buildKeepnet25(entry, f.LocLevel, s.rarityOf25(f.Species), s.fishModelVariantFor(f))
 	if idx := fieldIdxByCS("ecknbkpeeji", csGUID); idx >= 0 && idx < len(fish.Fields) {
 		fish.Fields[idx].Hex = uuid5OIDHex(card.GUID + "/card_fish")
 	}
@@ -109,7 +113,7 @@ func (s *Server) syntheticCardFish(ctx context.Context, species string) *RolledF
 // grantCard 发一张卡（管理路径）：构造 + 短事务入库 + 卡组同步计划落地。
 // 卡一律自由态（父空）——进组只能由玩家 27/2 手动指派。
 func (s *Server) grantCard(ctx context.Context, uid int64, species string) (*store.Item, error) {
-	card, err := s.prepareNewCard(ctx, uid, s.syntheticCardFish(ctx, species))
+	card, err := s.prepareNewCard(ctx, uid, s.syntheticCardFish(ctx, species), "")
 	if err != nil {
 		return nil, err
 	}
