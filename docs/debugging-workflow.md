@@ -66,6 +66,7 @@
 | 21/5 | args code **145**（空兑换列表） |
 | 卡片/卡册实例数组 | 客户端真实类型注册表：**362**=`ipdpoaiekem`、**364**=`imdcjllgdcn`；363是`phjbhljooid`卡册定义。使用`by_elem`显式映射，不能用`by_type_id`合成值或未注册的DTO名称替代 |
 | 卡片入册同步 | 800更新列表同时发送原卡及卡册，移除列表为空；原卡StorageType仍为18，父GUID指向卡册。4/1、4/4、4/5也需包含已入册原卡，客户端按父GUID填卡位；卡册f0快照不能替代库存卡片 |
+| 结算弹卡行集（2026-11-11 定案） | 两层 wire codec 与客户端解码器逐位一致：嵌鱼树 `ecknbkpeeji` 29 位（f17=可空guid odflendafcg、f18=BYTE 容器）、卡物品 `dapkdcghfmg` 14 位。弹窗行由客户端 `emddmmfmafl` 构建：星级行文案=体重档 `dohoaehalpj`（档1小/档2中→kTooltip_NotTrophyFish「非奖杯鱼」，档3大/档4特大→奖杯文案，见 `tools/ida-docs/enums/dohoaehalpj.md`）；额外行容器门禁排除 4(摩托)/18，鱼护 5 通过；行集整体还受 mode∈{1,2} 门禁（`mpkmenkhacf` 按视图状态现算，反编译丢条件，弹窗路径传 null 视图=定值）。中档鱼弹窗无星级=官服同款行为，勿当缺陷改服务端 |
 | 竿的零件 | 客户端工作坊按竿 `f5` 的 `gcfcdnfmnbh` 列表渲染；出厂部件（竿坯/手柄/导环）必须同时写进 f5，只写 f0~f2 不够 |
 | 装配派生表 | `rig_component` 由 `f5` 单向投影；历史数据可能为空，`reconcileRigProjection` 可回填 |
 | 聊天玩家列表 24/4 | 客户端返回类型为 `int[]`，使用普通 u32 数组；24/19 资料卡为 bytes 包装的 `dgbmlekfpbg`/2002 |
