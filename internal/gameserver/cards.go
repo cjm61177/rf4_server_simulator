@@ -69,7 +69,7 @@ func (s *Server) prepareNewCard(ctx context.Context, uid int64, f *RolledFish) (
 		WeightG: f.WeightG, LengthM: f.LengthM, Cat: f.Grade,
 		TS: float64(time.Now().UnixNano()) / 1e9,
 	}
-	fish := buildKeepnet25(entry, "", s.rarityOf25(f.Species))
+	fish := buildKeepnet25(entry, "", s.rarityOf25(f.Species), s.fishModelVariantFor(f))
 	if idx := fieldIdxByCS("ecknbkpeeji", csGUID); idx >= 0 && idx < len(fish.Fields) {
 		fish.Fields[idx].Hex = uuid5OIDHex(card.GUID + "/card_fish")
 	}
@@ -697,4 +697,3 @@ func CardDeckProgress(ctx context.Context, db *store.DB, uid int64) ([]map[strin
 	}
 	return out, nil
 }
-

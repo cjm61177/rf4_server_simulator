@@ -281,6 +281,9 @@ type RolledFish struct {
 	// 时刻判定，避免搏鱼跨过 06:00/19:00 后改用结算时间。
 	CastM   float64
 	IsNight bool
+	// ModelVariant 这尾鱼在客户端用的 FishFamily 族名（a_salmon_f2 等）；
+	// 空=用鱼种默认族。溜鱼 / 结算弹窗 / 渔护 / 鱼卡共用这一个值。
+	ModelVariant string
 }
 
 // stateFor 按 uid 取/建状态。
@@ -935,7 +938,7 @@ func (s *Server) rollFishFromDBWithRules(loc, bait string, gearCapKg float64, bo
 			grade = s.rollGradeForRoll(cctx, key, w, c)
 		}
 		lk, lp := s.cachedSpeciesLengthKP(cctx, c, key)
-		length := lk * math.Pow(float64(w), lp)
+		length := speciesLengthM(key, lk, lp, float64(w))
 		length = math.Round(length*100000) / 100000
 		f := &RolledFish{
 			FishGUID: newFishGUID(),
@@ -1372,7 +1375,7 @@ func (s *Server) rollFishPoolsWithRules(loc string, gearCapKg float64, bonus fis
 		lp = [2]float64{defaultSpeciesLengthK, defaultSpeciesLengthP}
 	}
 	lp[0], lp[1] = calibratedLengthKP(e.species, lp[0], lp[1])
-	length := lp[0] * math.Pow(float64(weightG), lp[1])
+	length := speciesLengthM(e.species, lp[0], lp[1], float64(weightG))
 	length = math.Round(length*100000) / 100000
 
 	return &RolledFish{
@@ -1612,7 +1615,15 @@ func (s *Server) fishInitialStaminaRatio() float64 {
 	return math.Max(0.05, math.Min(1.0, ratio))
 }
 
-func (s *Server) buildFish27(f *RolledFish, hookGUID, gearGuid string) *proto.Value {
+// buildFish27 构造 27 判鱼对象。
+// rigType 决定 27.f19 口径：官方真服抓包（2026-11-10/11，11 个 14/14）显示
+// 沉底/海钓/路亚的 f19 恒为 1.0（精确值 0x3f800000），浮钓族则是 0.001~0.0024
+// 的连续小值、随鱼种/重量上行——f19 是客户端行为 105 自动上钩尝试的强度输入，
+// 不是布尔启用位。浮钓官方低值下自动上钩仍发生但时延拉长（+4.4~11.6s vs 其他
+// 钓法 +0.3~1.1s），故浮钓族保留按鱼种/重量校准的曲线值，其余钓法固定 1。
+// tunable float_f19_force_one 非 0 时浮钓族也强制 1.0（回滚到全钓法 1 的口径，
+// 用于浮钓静置不上钩的应急恢复）。
+func (s *Server) buildFish27(f *RolledFish, hookGUID, gearGuid string, rigType int64) *proto.Value {
 	w := float64(f.WeightG)
 	st := officialSpeciesStatics[f.Species]
 	var f9, f10, f11, f12v, f13v, f14v, f15v, f16v, f17v, f18v, f19v, f20v float64
@@ -1636,6 +1647,9 @@ func (s *Server) buildFish27(f *RolledFish, hookGUID, gearGuid string) *proto.Va
 		f16v, f17v, f18v = fb[16], fb[17], fb[18]
 		f19v, f20v = fb[19], fb[20]
 	}
+	if !floatRigTypes[rigType] || s.tunableF("float_f19_force_one", 0) != 0 {
+		f19v = 1
+	}
 	profile := s.fishFightProfileFor(f)
 	stamina := s.fishStaminaForProfile(f, profile)
 	initialStamina := s.fishInitialStaminaRatio()
@@ -1656,6 +1670,17 @@ func (s *Server) buildFish27(f *RolledFish, hookGUID, gearGuid string) *proto.Va
 		// 线末端钩缺失时，27.f23 回退到鱼自身 GUID；
 		// 客户端用 f23 查找鱼实体所属部件。
 		hook = f.FishGUID
+	}
+
+	// 27.f22 与鱼物品 25.f11 同名（oajeeklppia）：客户端用它去取 FishFamily 模型族。
+	// 有变体族的鱼种一律发族名，保证溜鱼 / 结算弹窗 / 渔护 / 鱼卡是同一个模型；
+	// 没有变体族的鱼种才退回命名鱼的玩家名字（旧行为）。
+	modelKey := s.fishModelVariantFor(f)
+	var f22 *string
+	if modelKey != "" {
+		f22 = &modelKey
+	} else if named != nil {
+		f22 = named
 	}
 
 	return wiregen.MustMakeObj("fgogccpglhb", map[int]*proto.Value{
@@ -1680,7 +1705,7 @@ func (s *Server) buildFish27(f *RolledFish, hookGUID, gearGuid string) *proto.Va
 		19: proto.F32(float32(f19v)),
 		20: proto.F32(float32(f20v)),
 		21: s.buildFightCurvesForFish(f, pull, profile),
-		22: proto.Str(named),
+		22: proto.Str(f22),
 		23: proto.Guid(hook),
 		24: proto.Null(),
 	})
@@ -1736,7 +1761,8 @@ func scaleFishStaminaForEnergy(base, energyRatio, penalty float64) float64 {
 }
 
 // Push14_14 发判鱼推送：args("524")[guid(钓组), 27]。
-func (s *Session) Push14_14(f *RolledFish, hookGUID, gearGuid string) bool {
+// rigType 决定 27.f19 的钓法口径（见 buildFish27 注释）。
+func (s *Session) Push14_14(f *RolledFish, hookGUID, gearGuid string, rigType int64) bool {
 	if f == nil {
 		return false
 	}
@@ -1768,12 +1794,13 @@ func (s *Session) Push14_14(f *RolledFish, hookGUID, gearGuid string) bool {
 		"冲刺倍率", profile.ForceScale, "耐力倍率", profile.StaminaScale)
 	return s.Push(14, 14, proto.Args524(
 		proto.Guid(gearGuid),
-		s.Srv.buildFish27(f, hookGUID, gearGuid),
+		s.Srv.buildFish27(f, hookGUID, gearGuid, rigType),
 	)) != 0
 }
 
 // marineHookConfirm 海钓额外挂钩推送开关，tunables 键 marine_hook_confirm。
-// 真服成功抓包只有 14/14 -> 14/11 -> 14/8，没有 14/15 或中钩时的 4/22。
+// 早期抓包曾记"真服中钩时无 4/22"；2026-11-11 海钓抓包证实 14/11 后有
+// 钩 4/22（串钩=嵌套容器、单钩=裸钩，挂竿位），现 14/11 无条件补推。
 // ⚠️ 客户端实证（gdpondeemjf.pagenilfpij，见 specs/changes/nibble-veto-fish-leave）：
 // 命令 14/15 是"鱼离场"分支——开启本开关推送的 14/15 会把
 // 刚上钩的海钓鱼直接放走，而不是"确认挂钩"。保持默认关闭。
@@ -1781,9 +1808,9 @@ func (s *Session) marineHookConfirm() bool {
 	return s.Srv.tunableF("marine_hook_confirm", 0) != 0
 }
 
-// marineHookItemSync 是否在 14/11/14/9 后补发单钩 4/22。
-// 真服抓包里没有单独的挂钩 4/22，但私服的 14/1/2 钓组树可能缺少客户端
-// 启动搏鱼所需的 mounted hook，因此单独保留开关做实测。
+// marineHookItemSync 是否在 14/9 后补发单钩 4/22（14/11 现已无条件补推）。
+// 旧注释称真服无挂钩 4/22，2026-11-11 海钓抓包推翻；本开关仅剩
+// 14/9 场景官方未见对应推送，保持默认关闭。
 func (s *Session) marineHookItemSync() bool {
 	return s.Srv.tunableF("marine_hook_item_sync", 0) != 0
 }
@@ -2136,9 +2163,10 @@ func (s *Server) pushPendingBite(sess *Session, st *FishState, f *RolledFish, ge
 	if f.GearGUID == "" {
 		f.GearGUID = gear
 	}
+	rigType := st.RigType
 	st.persist.recoverPending = false
 	st.mu.Unlock()
-	sent := s.pushBaitedFish(sess, f, gear)
+	sent := s.pushBaitedFish(sess, f, gear, rigType)
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if generation != st.castGeneration {

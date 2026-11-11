@@ -84,6 +84,7 @@ func NewServer(cfg config.Admin, db *store.DB, log logger, webFS fs.FS) *Server 
 	mux.HandleFunc("GET /api/cards", auth(s.handlePlayerCards))
 	mux.HandleFunc("POST /api/cards/grant_deck", auth(s.handleCardGrantDeck))
 	mux.HandleFunc("POST /api/players/items/delete", auth(s.handlePlayerItemDelete))
+	mux.HandleFunc("POST /api/players/mail/delete", auth(s.handlePlayerMailDelete))
 	mux.HandleFunc("POST /api/players/keepnet/add", auth(s.handlePlayerKeepnetAdd))
 	mux.HandleFunc("POST /api/players/keepnet/delete", auth(s.handlePlayerKeepnetDelete))
 	mux.HandleFunc("POST /api/players/skills/update", auth(s.handlePlayerSkillUpdate))

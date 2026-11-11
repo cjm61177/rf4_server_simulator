@@ -41,8 +41,17 @@ func (s *Server) recoverCompletedCatch(uid int64, notify *Session) error {
 		if err != nil {
 			return err
 		}
-		if entry != nil && notify != nil {
-			notify.Push(4, 22, proto.Args(proto.S("61"), s.keepnetItemTree(notify.pushCtx(), entry, entry.KeepLevel)))
+		if entry != nil {
+			// 恢复出来的这尾鱼可能刚好补上该水域最后一种上星鱼（重启前已入护、
+			// 奖杯还没发的场景）。
+			if trophy, terr := s.grantWaterwayTrophy(s.dbCtx(), uid, entry.KeepLevel); terr != nil {
+				s.log.Warn("水域奖杯发放失败", "uid", uid, "water", entry.KeepLevel, "err", terr)
+			} else if notify != nil {
+				notify.pushWaterwayTrophies([]*store.Item{trophy})
+			}
+			if notify != nil {
+				notify.Push(4, 22, proto.Args(proto.S("61"), s.keepnetItemTree(notify.pushCtx(), entry, entry.KeepLevel)))
+			}
 		}
 	}
 	return nil
@@ -85,7 +94,8 @@ func (s *Server) recoverCompletedCatchLocked(st *FishState) (*store.KeepnetEntry
 	}
 	entry := &store.KeepnetEntry{UID: uid, EchoGUID: fish.FishGUID, Species: fish.Species,
 		NameZh: fish.Name, WeightG: fish.WeightG, LengthM: fish.LengthM, Cat: fish.Grade,
-		KeepLoc: st.Loc, KeepSpot: int64(st.Spot), KeepBait: st.Bait, KeepLevel: level, TS: caughtAt}
+		KeepLoc: st.Loc, KeepSpot: int64(st.Spot), KeepBait: st.Bait, KeepLevel: level, TS: caughtAt,
+		TackleCat: tackleCatForRig(st.RigType)}
 	kept, err := s.DB.KeepFishingCatchWithCapacity(ctx, entry, receipt.TotalXP, receipt.Silver, capacity)
 	if err != nil {
 		return nil, err

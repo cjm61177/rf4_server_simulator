@@ -25,6 +25,8 @@ func hProfile(ctx *Ctx) ([]byte, bool) {
 	if !ctx.Sess.Srv.requireDB(ctx) {
 		return nil, false
 	}
+	// 稀有鱼 / 超级稀有鱼鱼种数里程碑：覆盖离线期间跨档与历史存档，幂等。
+	pushRarityMilestoneItems(ctx.Sess, ctx.Sess.Srv.ensureRarityMilestones(ctx.Sess.pushCtx(), ctx.Sess.Userid))
 	p, err := ctx.Sess.Srv.BuildProfile307W(ctx.Sess.pushCtx(), ctx.Sess.Userid,
 		worldTotalGameMin(time.Now()))
 	if err != nil {
@@ -35,6 +37,9 @@ func hProfile(ctx *Ctx) ([]byte, bool) {
 	if err != nil {
 		return nil, false
 	}
+	// 水域奖杯补发：覆盖「离线期间集齐」与「本补丁上线前就已经集齐」的水域。
+	// 幂等，已发过的水域只查一次 kv 标记就跳过。
+	ctx.Sess.pushWaterwayTrophies(ctx.Sess.Srv.ensureWaterwayTrophies(ctx.Sess.pushCtx(), ctx.Sess.Userid))
 	return body, true
 }
 
@@ -58,6 +63,9 @@ func hItemCount(ctx *Ctx) ([]byte, bool) {
 	cctx := ctx.Sess.pushCtx()
 	switch container {
 	case containerBackpack:
+		// 背包列表兜底补发：3/1 的巡检只推 4/22，客户端没消费推送时玩家会以为
+		// 「没补发」；这里在列表请求前再巡检一次（每会话一次），奖座直接进列表。
+		ctx.Sess.ensureRarityMilestonesOnce()
 		used, _ = srv.DB.CountItemsByContainers(cctx, ctx.Sess.Userid, []string{"backpack", "rig"})
 	case containerKeepnet:
 		srv.retryCompletedCatchRecovery(ctx.Sess)
@@ -101,6 +109,7 @@ func hItemGUIDs(ctx *Ctx) ([]byte, bool) {
 	var guids []string
 	switch container {
 	case containerBackpack:
+		ctx.Sess.ensureRarityMilestonesOnce()
 		guids, _ = srv.DB.ItemGUIDsByContainers(cctx, ctx.Sess.Userid, []string{"backpack", "rig"})
 	case containerKeepnet:
 		srv.retryCompletedCatchRecovery(ctx.Sess)
@@ -1268,7 +1277,7 @@ func hFishingPull(ctx *Ctx) ([]byte, bool) {
 			ctx.Log.Info("14/9 海钓抬竿只走真服 14/11 路径，跳过 14/15/4/22")
 		}
 		if ctx.Sess.marineHookItemSync() {
-			ctx.Sess.Push4_22Hook(gear)
+			ctx.Sess.Push4_22Hook(false, gear)
 		}
 		ctx.Log.Info("14/9 海钓抬竿确认", "rod", shortGUID(gear), "fish", shortGUID(pending.FishGUID),
 			"rig_type", rigType, "14/15", bound)
@@ -1344,18 +1353,15 @@ func hFishingHooked(ctx *Ctx) ([]byte, bool) {
 		srv.scheduleBiteForHooked(ctx.Sess, st)
 	}
 	if pending != nil && marineRigType(rigType) && !wasHooked {
-		if !ctx.Sess.marineHookConfirm() {
-			if !ctx.Sess.marineHookItemSync() {
-				ctx.Log.Info("14/11 只走真服已证实路径，跳过 14/15/4/22")
-			}
-		} else {
+		// 官方抓包（2026-11-11）海钓 14/11 后有钩 4/22（串钩=嵌套容器、
+		// 单钩=裸钩，挂竿位同四钓法口径）；14/15 仍是"鱼离场"分支，继续默认不推。
+		if ctx.Sess.marineHookConfirm() {
 			ctx.Sess.Push14_15(gear, pending.FishGUID)
 		}
-		if ctx.Sess.marineHookItemSync() {
-			ctx.Sess.Push4_22Hook(gear)
-		}
+		ctx.Sess.Push4_22Hook(true, gear)
 	} else {
-		ctx.Sess.Push4_22Hook(gear)
+		// 挂竿位四钓法通用（官方抓包沉底/浮钓/海钓/路亚中鱼钩 flags 均含 1024）。
+		ctx.Sess.Push4_22Hook(true, gear)
 	}
 	if announce {
 		srv.notifyFishHooked(ctx.Sess, hookedFish, gear)
@@ -1595,7 +1601,10 @@ func hFishStats(ctx *Ctx) ([]byte, bool) {
 		return nil, false
 	}
 	f0, f1, f4 := tree.Field(0), tree.Field(1), tree.Field(4)
-	ctx.Log.Info("3/2 统计快照", "total", f0.U32(), "rare", f1.U32(), "daily_count", f4.U32())
+	// 同时输出 f11/f13，便于与客户端面板逐项对照这两个语义未定的槽位。
+	f11, f13 := tree.Field(11), tree.Field(13)
+	ctx.Log.Info("3/2 统计快照", "total", f0.U32(), "rare", f1.U32(), "daily_count", f4.U32(),
+		"slot_f11", f11.U64(), "slot_f13", f13.U64())
 	body, err := proto.EncodeValue(tree, ctx.Sess.Table())
 	if err != nil {
 		return nil, false
@@ -1648,7 +1657,7 @@ func (s *Server) rarityOf25(fishKey string) int64 {
 	return s.DB.SpeciesRarity(s.dbCtx(), fishKey)
 }
 
-func buildKeepnet25(e *store.KeepnetEntry, levelKey string, rarity int64) *proto.Value {
+func buildKeepnet25(e *store.KeepnetEntry, levelKey string, rarity int64, modelKey string) *proto.Value {
 	if e.KeepLevel != "" {
 		levelKey = e.KeepLevel
 	}
@@ -1664,9 +1673,19 @@ func buildKeepnet25(e *store.KeepnetEntry, levelKey string, rarity int64) *proto
 	if grade >= 4 && e.NameZh == "" {
 		state |= 4194304 // 蓝冠未命名可命名位
 	}
+	if modelKey == "" {
+		modelKey = e.ModelVariant
+	}
 	var name *string
-	if e.NameZh != "" {
+	switch {
+	case modelKey != "":
+		name = &modelKey
+	case e.NameZh != "":
 		name = &e.NameZh
+	}
+	var nameText *string
+	if modelKey != "" && e.NameZh != "" {
+		nameText = &e.NameZh
 	}
 	var bait *string
 	if e.KeepBait != "" {
@@ -1701,6 +1720,7 @@ func buildKeepnet25(e *store.KeepnetEntry, levelKey string, rarity int64) *proto
 		9:  proto.U32(27), // 钩位：浮钓
 		10: proto.Str(loc),
 		11: proto.Str(name),
+		12: proto.Str(nameText),
 		14: proto.U32(displayXP),
 		16: proto.Guid(e.EchoGUID),
 		18: proto.U32(5), // 鱼护容器 id

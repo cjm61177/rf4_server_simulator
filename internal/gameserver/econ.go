@@ -3,6 +3,7 @@ package gameserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"math/rand"
 	"strings"
@@ -233,7 +234,7 @@ func (s *Server) buildPending25(f *RolledFish, st *FishState, levelKey string) *
 		KeepBait: st.Bait,
 		TS:       float64(time.Now().UnixNano()) / 1e9,
 	}
-	return buildKeepnet25(e, levelKey, s.rarityOf25(f.Species))
+	return buildKeepnet25(e, levelKey, s.rarityOf25(f.Species), s.fishModelVariantFor(f))
 }
 
 // fishingKeep 14/5 入护。
@@ -268,6 +269,9 @@ func (s *Server) fishingKeep(ctx *Ctx) ([]byte, bool) {
 			kept.LocLevel = s.currentLevel(uid)
 		}
 		keepLevel := kept.LocLevel
+		// 钓法快照取入护当刻该竿的钓组类型；与 14/4 结算的熟练度大类同源
+		// （fishingSkillCatForRig），保证统计页与技能页对同一条鱼口径一致。
+		tackleCat := tackleCatForRig(st.RigType)
 		capacity, err := s.keepnetCapacity(cctx, uid)
 		if err != nil {
 			st.mu.Unlock()
@@ -280,6 +284,7 @@ func (s *Server) fishingKeep(ctx *Ctx) ([]byte, bool) {
 			WeightG: kept.WeightG, LengthM: kept.LengthM, Cat: kept.Grade,
 			KeepLoc: st.Loc, KeepSpot: int64(st.Spot), KeepBait: st.Bait,
 			KeepLevel: keepLevel, TS: float64(time.Now().UnixNano()) / 1e9,
+			TackleCat: tackleCat,
 		}, kept.XP, kept.Silver, capacity)
 		if err != nil {
 			st.mu.Unlock()
@@ -303,11 +308,37 @@ func (s *Server) fishingKeep(ctx *Ctx) ([]byte, bool) {
 		}
 		st.mu.Unlock()
 		s.notifyFishKept(ctx.Sess, &kept)
+		// 稀有鱼 / 超级稀有鱼鱼种数奖座：入护才计入图鉴（catch_log 刚落库），
+		// 放生不计——与 3/17 图鉴、307.f16 星号同一口径。奖座推 4/22 并播报。
+		if keptInNet {
+			if gifts := s.rarityMilestoneAfterKeep(cctx, uid); len(gifts) > 0 {
+				pushRarityStatuettesOnKeep(ctx.Sess, gifts)
+			}
+		}
 		// 钓获礼包：入护成功后按概率当场开箱（异步，避免拖慢入护回包）。
 		s.scheduleLootBox(ctx.Sess, &kept)
 		// 本尾已落 catch_log；14/4 结算卡 f7 的档案快照早于落库、不含本尾，
 		// 在此补推新档案，等级旁星号（307.f16）即时计入新奖杯鱼种。
 		ctx.Sess.Push2_1()
+		// 水域奖杯：这一尾可能刚好补上该水域面板的最后一种鱼。
+		//
+		// 只在 keptInNet（本次真的写进 keepnet_items + catch_log）时判定：
+		// 图鉴、307.f16 星号、3/17 面板都只认 catch_log，14/6 放生不写，所以
+		// 「入护即判定」才保证「面板填满」与「拿到奖杯」严格等价（review P2）。
+		if keptInNet {
+			if trophy, terr := s.grantWaterwayTrophy(cctx, uid, keepLevel); terr != nil {
+				ctx.Log.Warn("水域奖杯发放失败", "water", keepLevel, "err", terr)
+			} else if trophy != nil {
+				// 结算界面（801）早于入护，已经发不出去了；改用背包增量 + 系统播报，
+				// 与稀有鱼奖座、福袋开箱同一通道。
+				ctx.Sess.pushWaterwayTrophies([]*store.Item{trophy})
+				name := s.lootItemName(cctx, trophy.ItemID)
+				if name == "" {
+					name = trophy.ItemID
+				}
+				ctx.Sess.pushSystemChat(fmt.Sprintf("集齐该水域全部稀有鱼：%s", name))
+			}
+		}
 		out := proto.Args(proto.S("61"))
 		if keptInNet {
 			out.Items = append(out.Items, s.buildPending25(&kept, st, keepLevel))
