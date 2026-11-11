@@ -442,9 +442,41 @@ type breakReportQueryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+// rigGUIDChainMounted 判断部件的 rig_guid 挂载链是否最终落在竿上。
+// 拟饵钩装钩即 rig_guid=拟饵GUID 而非竿（lure_hooks.go 装钩路径），客户端
+// 17/9 断件上报直接给钩 GUID，按竿单级归属裁决会误判“断件不在该钓组中”
+// （2026-11-11 14:54 实测连发 828 次）。沿 rig_guid 逐级上溯，落到竿即成立；
+// 链断（父行不存在）、出现环或超深一律 false。
+func rigGUIDChainMounted(ctx context.Context, db breakReportQueryer, rodGUID, partRigGUID string) (bool, error) {
+	guid := partRigGUID
+	seen := map[string]bool{}
+	for depth := 0; guid != "" && depth < 8; depth++ {
+		if seen[guid] {
+			return false, nil
+		}
+		seen[guid] = true
+		if guid == rodGUID {
+			return true, nil
+		}
+		var parent string
+		if err := db.QueryRowContext(ctx,
+			`SELECT COALESCE(rig_guid,'') FROM item WHERE guid=?`, guid).Scan(&parent); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return false, nil
+			}
+			return false, err
+		}
+		guid = parent
+	}
+	return false, nil
+}
+
 func breakReportMounted(ctx context.Context, db breakReportQueryer, rod *store.Item, fields []proto.Field, part *store.Item, category int64) (bool, error) {
 	if part.RigGUID != "" && part.RigGUID != rod.GUID {
-		return false, nil
+		// 链上挂载件（拟饵钩）：命中即挂载成立——钩不在竿 f5 组件表与
+		// 竿名下的 rig_component 投影里，下面的槽位与投影查询对链上件
+		// 永远 miss，必须直接放行。
+		return rigGUIDChainMounted(ctx, db, rod.GUID, part.RigGUID)
 	}
 	if name, dedicated := categorySlotField[category]; dedicated {
 		if idx := fieldIdxByCS(rod.WireClass, name); idx >= 0 && idx < len(fields) && fields[idx].GuidHex() == part.GUID {
@@ -735,6 +767,16 @@ func (s *Server) breakComponentTx(ctx context.Context, uid int64, rodGUID, compG
 	if !mounted {
 		return nil, errors.New("断件不在该钓组中")
 	}
+	// 链上挂载件（拟饵钩）：钩挂在拟饵 f0 钩槽数组而非竿 f5，销毁前按
+	// 卸钩语义从数组摘除元素（缩短），否则拟饵树残留幽灵钩继续渲染。
+	lureHookOnLure := comp.RigGUID != "" && comp.RigGUID != rodGUID
+	var lureUpdated *store.Item
+	if lureHookOnLure {
+		lureUpdated, err = s.breakLureHookTx(ctx, tx, uid, comp.RigGUID, comp.GUID)
+		if err != nil {
+			return nil, err
+		}
+	}
 	before := comp.Durability
 	// 投影可能先于 f5 存在；摘除投影不能依赖 f5 是否命中。
 	if _, err := tx.ExecContext(ctx, `DELETE FROM rig_component WHERE rig_guid=? AND guid=?`, rodGUID, comp.GUID); err != nil {
@@ -745,16 +787,22 @@ func (s *Server) breakComponentTx(ctx context.Context, uid int64, rodGUID, compG
 	stored := protoFieldAt(rodFields, rod.WireClass, csRigObject)
 	comps := rigCompsOf(stored)
 	var removed, stackRefresh []string
-	if category == catHook {
+	switch {
+	case category == catHook && !lureHookOnLure:
 		baitsRemoved, stacks, derr := s.detachHookBaitsTx(ctx, tx, uid, rodGUID, comp.GUID, comps)
 		if derr != nil {
 			return nil, derr
 		}
 		removed = append(removed, baitsRemoved...)
 		stackRefresh = append(stackRefresh, stacks...)
-	} else if err := s.clearComponentBaitSettingsTx(ctx, tx, rodGUID, comp.GUID, comps); err != nil {
-		return nil, err
+	case category != catHook:
+		if err := s.clearComponentBaitSettingsTx(ctx, tx, rodGUID, comp.GUID, comps); err != nil {
+			return nil, err
+		}
 	}
+	// 拟饵钩断裂不摘拟饵本体：detachHookBaitsTx 按 bait_hook:<拟饵>→断钩
+	// 映射会把拟饵整体退回背包，那是竿钩挂饵的语义；拟饵钩断只清钩槽，
+	// 关联由 breakLureHookTx 切到新活动钩。
 	detached := false
 	for key, c := range comps {
 		if c.GUID == comp.GUID {
@@ -807,12 +855,92 @@ func (s *Server) breakComponentTx(ctx context.Context, uid int64, rodGUID, compG
 	stackRefresh = append(stackRefresh, s.backpackStackGUIDsForItems(ctx, uid, stackNumericIDs, stackSourceGUIDs)...)
 	stackRefresh = uniqueStrings(stackRefresh)
 	updated := append([]string{rodGUID}, stackRefresh...)
+	if lureUpdated != nil {
+		updated = append(updated, lureUpdated.GUID)
+	}
 	out := &gearBreakOutcome{
 		ComponentBroken: true, BreakPart: "component", BrokenGUID: comp.GUID,
 		RemovedGUIDs: removed, StackRefreshGUIDs: stackRefresh,
 		UpdatedTrees: s.loadUpdatedTrees(ctx, updated),
 	}
 	return out, nil
+}
+
+// breakLureHookTx 断钩时按卸钩语义从拟饵钩槽数组摘除该钩：元素缩短移除、
+// 活动钩下标随迁（lureActiveOrdinalAfterStrip）、幽灵投影行与 bait_hook
+// 关联同事务清理——编码与 lureHookRemoveCommit 完全一致（保长空槽表示
+// 实锤崩客户端，见 lure_hooks.go 头注）。钩行本身由调用方
+// DeleteItemCascadeTx 销毁。返回非空 = 拟饵字段已改写（调用方推树）；
+// 返回空且无错误 = 状态无需/无法清理（父级缺失或非拟饵），断件照常进行，
+// 不让状态卫生问题挡住断件本身。
+func (s *Server) breakLureHookTx(ctx context.Context, tx *sql.Tx, uid int64, lureGUID, hookGUID string) (*store.Item, error) {
+	lureRow, err := s.DB.GetItemByGUIDTx(ctx, tx, lureGUID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if lureRow == nil || !isLureRow(lureRow) || lureRow.UID != uid {
+		s.log.Warn("断钩跳过拟饵钩槽清理：父级不是当前玩家的拟饵",
+			"lure", shortGUID(lureGUID), "hook", shortGUID(hookGUID))
+		return nil, nil
+	}
+	fields, err := FieldsFromJSON(lureRow.FieldsJSON)
+	if err != nil {
+		s.log.Warn("断钩跳过拟饵钩槽清理：拟饵字段解析失败", "lure", shortGUID(lureGUID), "err", err)
+		return nil, nil
+	}
+	idx := lureHookFieldIndex(lureRow.WireClass)
+	if idx < 0 || idx >= len(fields) {
+		s.log.Warn("断钩跳过拟饵钩槽清理：拟饵缺少钩槽数组字段", "lure", shortGUID(lureGUID), "wire", lureRow.WireClass)
+		return nil, nil
+	}
+	list := fields[idx].Val
+	if list == nil || list.Kind != proto.KindArgs {
+		s.log.Warn("断钩跳过拟饵钩槽清理：钩槽数组结构异常", "lure", shortGUID(lureGUID))
+		return nil, nil
+	}
+	ordinal := -1
+	for i := range list.Items {
+		if lureHookItemGUID(list.Items, i) == hookGUID {
+			ordinal = i
+			break
+		}
+	}
+	if ordinal < 0 {
+		// 钩行 rig_guid 指向拟饵但数组里没有它（历史脏数据）：没有树可清，
+		// 只需对齐投影与关联。
+		s.log.Warn("断钩钩行不在拟饵数组中，仅清理投影", "lure", shortGUID(lureGUID), "hook", shortGUID(hookGUID))
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM rig_component WHERE rig_guid=? AND guid=?`, lureGUID, hookGUID); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+	items := append([]*proto.Value(nil), list.Items...)
+	activeBefore := lureActiveOrdinal(fields, len(items))
+	keptOld := make([]int, 0, len(items)-1)
+	for i := range items {
+		if i != ordinal {
+			keptOld = append(keptOld, i)
+		}
+	}
+	items = append(items[:ordinal], items[ordinal+1:]...)
+	newActive := lureActiveOrdinalAfterStrip(activeBefore, keptOld)
+	list.Items = items
+	fields[idx] = proto.Field{Op: "VAL", Val: list}
+	applyLureActiveOrdinal(lureRow.WireClass, fields, newActive)
+	if err := updateItemFieldsTx(ctx, s.DB, tx, lureRow, fields); err != nil {
+		return nil, err
+	}
+	// 幽灵投影行与 bait_hook 关联清理，与卸钩路径同款。
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM rig_component WHERE rig_guid=? AND slot=?`, lureGUID, catHook); err != nil {
+		return nil, err
+	}
+	if err := syncLureBaitHookTx(ctx, tx, lureGUID, lureHookItemGUID(items, newActive)); err != nil {
+		return nil, err
+	}
+	s.log.Info("拟饵钩断裂摘除", "lure", shortGUID(lureGUID), "hook", shortGUID(hookGUID), "active", newActive)
+	return lureRow, nil
 }
 
 // resolveGearBreak 按真实装配决定超载对象。手竿比较竿/主线/子线；
