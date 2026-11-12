@@ -1919,12 +1919,12 @@ func (s *Server) rigItemDeleteComponentAt(ctx context.Context, rodGUID string, s
 //   - 退回背包的普通物品树放入 f1，其 GUID 不能进入 f2；
 //   - 整条删除的拆分子实例 GUID 进入 f2，来源堆增加后的树放入 f1。
 type rigDetachResult struct {
-	CompGUID     string       // 被拆下的组件 guid
-	DeletedGUID  string       // 整条删除的子实例 guid（f2 移除段素材；退回路径为空）
-	ReturnedTree *proto.Value // 退回背包物品的新树（f1 更新段素材）
-	RefundTree   *proto.Value // 拆出厂钩物化退包的新物品树（新 guid → f0 新增段素材）
-	SourceTree   *proto.Value // 拆分子实例来源堆 +1 后的新树（f1 更新段素材）
-	SourceGUID   string       // 拆分子实例的来源堆 guid（回包后强制刷新客户端计数）
+	CompGUID     string         // 被拆下的组件 guid
+	DeletedGUID  string         // 整条删除的子实例 guid（f2 移除段素材；退回路径为空）
+	ReturnedTree *proto.Value   // 退回背包物品的新树（f1 更新段素材）
+	RefundTree   *proto.Value   // 拆出厂钩物化退包的新物品树（新 guid → f0 新增段素材）
+	SourceTree   *proto.Value   // 拆分子实例来源堆 +1 后的新树（f1 更新段素材）
+	SourceGUID   string         // 拆分子实例的来源堆 guid（回包后强制刷新客户端计数）
 	Released     []*rigReleased // 换钩必退饵：随钩退回的鱼饵（树进 f1、子实例进 f2）
 }
 
