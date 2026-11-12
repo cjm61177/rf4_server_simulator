@@ -400,15 +400,20 @@ func (s *Server) queueReleasedStackRefresh(ctx *Ctx, released []*rigReleased) {
 
 // releaseRigComponentItem 将一个被清理的组件实例退回背包或来源堆，
 // 并返回去向描述供调用方并入响应快照/安排刷新。
+// 拆分子实例按实装份数退回来源堆（如蛆×15 退 15），普通物品退回背包。
 func (s *Server) releaseRigComponentItem(ctx context.Context, row *store.Item) *rigReleased {
 	if s.refundableSplitChild(ctx, row) {
 		srcGUID := splitSourceGUID(row)
+		refund := s.stackCountOf(ctx, row)
+		if refund < 1 {
+			refund = 1
+		}
 		_ = s.DB.DeleteItems(ctx, []string{row.GUID})
 		rel := &rigReleased{GUID: row.GUID}
 		if srcGUID != "" {
 			rel.SourceGUID = srcGUID
 			if src, err := s.DB.GetItemByGUID(ctx, srcGUID); err == nil && src != nil {
-				s.setStackCount(ctx, src, s.stackCountOf(ctx, src)+1)
+				s.setStackCount(ctx, src, s.stackCountOf(ctx, src)+refund)
 				if t, terr := s.itemTree(ctx, src); terr == nil {
 					rel.SourceTree = t
 				}
@@ -424,6 +429,73 @@ func (s *Server) releaseRigComponentItem(ctx context.Context, row *store.Item) *
 		}
 	}
 	return rel
+}
+
+// releaseBaitsForHook 换钩必退饵：把挂在指定钩上的鱼饵（catBait）一并退回。
+// 按 rod_setting 的 bait_hook:<饵guid> → 钩guid 实例关联定位（不按数组下标
+// 猜配对），退回复用 releaseRigComponentItem（拆分子实例整条删除并把份数退回
+// 来源堆，普通饵退回背包），同时从实例 f5 与 rig_component 派生表摘除饵，
+// 最后删除 bait_hook 与 rebait:<槽位> 关联，防止抛竿自动补挂把饵再挂回新钩。
+// 拟饵族（catLure）的钩饵关联不在此处理（lure_hooks 链路自有语义）。
+func (s *Server) releaseBaitsForHook(ctx context.Context, parentGUID, hookGUID string) []*rigReleased {
+	if hookGUID == "" {
+		return nil
+	}
+	rows, err := s.DB.SQL.QueryContext(ctx,
+		`SELECT key FROM rod_setting WHERE guid=? AND value=? AND key LIKE 'bait_hook:%'`,
+		parentGUID, hookGUID)
+	if err != nil {
+		s.log.Warn("换钩退饵：读取钩饵关联失败", "parent", shortGUID(parentGUID), "err", err)
+		return nil
+	}
+	var baits []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			continue
+		}
+		if bait := strings.TrimPrefix(key, "bait_hook:"); bait != "" {
+			baits = append(baits, bait)
+		}
+	}
+	_ = rows.Close()
+	if len(baits) == 0 {
+		return nil
+	}
+	var released []*rigReleased
+	for _, bait := range baits {
+		// 关联指向的钩已被拆下，无论饵当前状态如何这条关联都已失效。
+		if _, err := s.DB.SQL.ExecContext(ctx,
+			`DELETE FROM rod_setting WHERE guid=? AND key=?`, parentGUID, "bait_hook:"+bait); err != nil {
+			s.log.Warn("换钩退饵：清理钩饵关联失败", "parent", shortGUID(parentGUID), "err", err)
+			continue
+		}
+		row, err := s.DB.GetItemByGUID(ctx, bait)
+		if err != nil || row == nil {
+			continue // 悬空关联：没有实例可退
+		}
+		if row.Container != "rig" || row.RigGUID != parentGUID {
+			continue // 饵已不在本竿上，只清悬空关联
+		}
+		// 同品类实例删除后会重排，每轮按 GUID 重新定位（与 rigRemoveAll 同口径）。
+		comps := s.storedRigComponents(ctx, parentGUID)
+		key, _, ok := rigCompKeyForGUID(comps, bait)
+		if ok && rigCompCategory(key) != catBait {
+			continue
+		}
+		if ok {
+			ordinal := rigCompOrdinal(key)
+			if !s.rigItemDeleteComponentAt(ctx, parentGUID, catBait, ordinal) {
+				_ = s.DB.DeleteRigComponentAt(ctx, parentGUID, catBait, ordinal)
+			}
+			// 清掉该槽位的待补挂记录，防止下次抛竿把退回的饵自动挂回新钩。
+			_, _ = s.DB.SQL.ExecContext(ctx, `DELETE FROM rod_setting WHERE guid=? AND key=?`,
+				parentGUID, fmt.Sprintf("rebait:%d", ordinal))
+		}
+		released = append(released, s.releaseRigComponentItem(ctx, row))
+		s.log.Info("换钩退饵", "parent", shortGUID(parentGUID), "hook", shortGUID(hookGUID), "bait", shortGUID(bait))
+	}
+	return released
 }
 
 // canonicalIndex 返回品类在 f5 组件中的规范索引。
@@ -1427,6 +1499,19 @@ func (s *Server) rigSetComponent(ctx context.Context, uid int64, parentGUID stri
 		}
 	}
 
+	// 换钩必退饵：钩被替换时，挂在旧钩上的鱼饵一并退回。
+	// 拆分子实例整删进 f2、退包树进 f1（releasedReturnTrees），
+	// 来源堆刷新由 queueReleasedStackRefresh 承接。
+	var hookBaitReleased []*rigReleased
+	if slot == catHook && oldGUID != "" && oldGUID != itemGUID {
+		hookBaitReleased = s.releaseBaitsForHook(ctx, parentGUID, oldGUID)
+		for _, rel := range hookBaitReleased {
+			if rel != nil && !rel.Returned {
+				removed = append(removed, rel.GUID)
+			}
+		}
+	}
+
 	// 非拆分挂载需要写入 wire 父引用。
 	if itemGUID != "" {
 		if mounted, merr := s.DB.GetItemByGUID(ctx, itemGUID); merr == nil && mounted != nil {
@@ -1436,9 +1521,9 @@ func (s *Server) rigSetComponent(ctx context.Context, uid int64, parentGUID stri
 
 	// 先修改实例字段，再重建 rig_component 派生索引。
 	// 顺序反过来会导致拆卸只删索引，实例中仍保留组件。
-	// 收集去重退回的组件：替换卸下的旧组件已在上面的 updated 段，
-	// 这里只补去重路径的退回（换类型收敛、互斥槽清理等）。
-	var released []*rigReleased
+	// 收集去重退回的组件：替换卸下的旧组件与换钩退回的饵已在上面的
+	// updated/removed 段，这里只补去重路径的退回（换类型收敛、互斥槽清理等）。
+	released := hookBaitReleased
 	s.rigComponentWriteAt(ctx, parentGUID, slot, ordinal, itemGUID, extra, &released)
 	res.Released = released
 	res.UpdatedTrees = append(res.UpdatedTrees, releasedReturnTrees(released)...)
@@ -1840,6 +1925,7 @@ type rigDetachResult struct {
 	RefundTree   *proto.Value // 拆出厂钩物化退包的新物品树（新 guid → f0 新增段素材）
 	SourceTree   *proto.Value // 拆分子实例来源堆 +1 后的新树（f1 更新段素材）
 	SourceGUID   string       // 拆分子实例的来源堆 guid（回包后强制刷新客户端计数）
+	Released     []*rigReleased // 换钩必退饵：随钩退回的鱼饵（树进 f1、子实例进 f2）
 }
 
 // trees 是应进入 f1 的物品树。
@@ -1854,15 +1940,30 @@ func (r *rigDetachResult) trees() []*proto.Value {
 	if r.SourceTree != nil {
 		out = append(out, r.SourceTree)
 	}
+	out = append(out, releasedReturnTrees(r.Released)...)
+	for _, rel := range r.Released {
+		if rel != nil && rel.SourceTree != nil {
+			out = append(out, rel.SourceTree)
+		}
+	}
 	return out
 }
 
 // removedGUIDs 是应进入 f2 的 GUID，仅包含整条删除的子实例。
 func (r *rigDetachResult) removedGUIDs() []string {
-	if r == nil || r.DeletedGUID == "" {
+	if r == nil {
 		return nil
 	}
-	return []string{r.DeletedGUID}
+	var out []string
+	if r.DeletedGUID != "" {
+		out = append(out, r.DeletedGUID)
+	}
+	for _, rel := range r.Released {
+		if rel != nil && !rel.Returned {
+			out = append(out, rel.GUID)
+		}
+	}
+	return out
 }
 
 // rigRemoveComponent 按槽位拆下该品类的第一件组件。
@@ -1987,6 +2088,10 @@ func (s *Server) rigDetachAt(ctx context.Context, parentGUID string, slot, ordin
 	if !s.rigItemDeleteComponentAt(ctx, parentGUID, slot, ordinal) {
 		_ = s.DB.DeleteRigComponentAt(ctx, parentGUID, slot, ordinal)
 	}
+	// 换钩必退饵：拆钩时挂在它上面的鱼饵一并退回，素材并入快照与来源堆刷新。
+	if slot == catHook {
+		res.Released = s.releaseBaitsForHook(ctx, parentGUID, compGUID)
+	}
 	// 手持工具拆下装填物时同时清空 f1 的装填引用。
 	s.setHanditemLoadedRef(ctx, parentGUID, "")
 	s.log.Info("拆卸", "parent", shortGUID(parentGUID), "slot", slot, "ordinal", ordinal,
@@ -1996,7 +2101,10 @@ func (s *Server) rigDetachAt(ctx context.Context, parentGUID string, slot, ordin
 
 // rigRemoveAll 拆下父对象上的全部组件。
 func (s *Server) rigRemoveAll(ctx context.Context, uid int64, parentGUID string) []*rigDetachResult {
+	// 先清掉钩饵关联：饵随后作为独立组件逐件退回，钩的拆卸不应再触发退饵，
+	// 否则同一实例会被处理两次（且拆钩后按旧序号删饵会误伤未处理的组件）。
 	_, _ = s.DB.SQL.ExecContext(ctx, `DELETE FROM rod_setting WHERE guid=? AND key LIKE 'rebait:%'`, parentGUID)
+	_, _ = s.DB.SQL.ExecContext(ctx, `DELETE FROM rod_setting WHERE guid=? AND key LIKE 'bait_hook:%'`, parentGUID)
 	rows, _ := s.DB.ListRigComponents(ctx, parentGUID)
 	comps := s.storedRigComponents(ctx, parentGUID)
 	seen := map[string]bool{}
@@ -2287,13 +2395,24 @@ func (s *Server) queueSourceStackRefresh(ctx *Ctx, results ...*rigDetachResult) 
 	var guids []string
 	var trees []*proto.Value
 	seen := map[string]bool{}
+	add := func(guid string, tree *proto.Value) {
+		if guid == "" || tree == nil || seen[guid] {
+			return
+		}
+		seen[guid] = true
+		guids = append(guids, guid)
+		trees = append(trees, tree)
+	}
 	for _, res := range results {
-		if res == nil || res.SourceGUID == "" || res.SourceTree == nil || seen[res.SourceGUID] {
+		if res == nil {
 			continue
 		}
-		seen[res.SourceGUID] = true
-		guids = append(guids, res.SourceGUID)
-		trees = append(trees, res.SourceTree)
+		add(res.SourceGUID, res.SourceTree)
+		for _, rel := range res.Released {
+			if rel != nil {
+				add(rel.SourceGUID, rel.SourceTree)
+			}
+		}
 	}
 	if len(guids) == 0 {
 		return
