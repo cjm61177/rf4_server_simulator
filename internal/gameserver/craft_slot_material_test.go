@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"rf4server/internal/proto"
+	"rf4server/internal/store"
 )
 
 // craftTreeWithSlots 与 economyCraftTree 同构，但材料槽第三字段带鱼种/物品 id
@@ -43,9 +44,24 @@ func craftOKSlots(t *testing.T, srv *Server, uid int64, recipe string, slots []c
 	return u64Of(resp.Fields[0].Num) != 0
 }
 
+// seedKeepnetFishWeightG 与 seedKeepnetFish 同构，但鱼重可指定（克）：
+// 切鱼产量按鱼重阶梯（cutFishPiecesForWeightG），固定 1200g 测不出阶梯。
+func seedKeepnetFishWeightG(t *testing.T, db *store.DB, uid int64, guid, species string, weightG int64) {
+	t.Helper()
+	if _, err := db.SQL.Exec(`
+		INSERT INTO keepnet_items(echo_guid,uid,species,name_zh,weight_g,length_m,cat,
+		                          keep_loc,keep_spot,keep_bait,keep_level,ts)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		guid, uid, species, "鱼", weightG, 0.40, 2, "loc1_02", 1, "worm", "level_001_lake", 1.0); err != nil {
+		t.Fatalf("写入鱼护渔获 %s(%dg) 失败: %v", species, weightG, err)
+	}
+}
+
 // TestCraftCutFishConsumesSelectedKeepnetFish 切鱼块必须吃掉选中的那尾鱼：
 // 配方表零材料（craft_bait_cut_fish materials_json=[]），材料槽 guid 直接指向
 // 鱼护 echo guid。不接线时会零成本无限产出（2026-11-13 实机白嫖实测）。
+// 官服产量按鱼重阶梯（cutFishPiecesForWeightG）：1200g 的鱼整 1 块，不按
+// 定义单位量 30 折算。
 func TestCraftCutFishConsumesSelectedKeepnetFish(t *testing.T) {
 	db := openRecipeTestDB(t)
 	srv := newSkillsCraftServer(t, db)
@@ -64,8 +80,38 @@ func TestCraftCutFishConsumesSelectedKeepnetFish(t *testing.T) {
 	if keepnetGUIDs(t, db, uid)[fishGUID] {
 		t.Fatal("选中的鱼应已从鱼护移除")
 	}
-	if got := countOfItem(t, srv, ctx0, uid, "fish_pieces"); got < 1 {
-		t.Fatalf("应产出鱼块，实得 %d", got)
+	if got := countOfItem(t, srv, ctx0, uid, "fish_pieces"); got != 1 {
+		t.Fatalf("1200g 的鱼应产出 1 块（按鱼重计件），实得 %d", got)
+	}
+}
+
+// TestCraftCutFishPiecesScaleWithWeight 官服切鱼产量随鱼重阶梯：约整公斤
+// 每公斤 1 块、不足 1 公斤 1 块（社区实测 512g→1、2kg→2、3.4kg→3，
+// 2026-11-13 检索，见 spec 证据节）。3400g→3 块、700g→1 块。
+func TestCraftCutFishPiecesScaleWithWeight(t *testing.T) {
+	db := openRecipeTestDB(t)
+	srv := newSkillsCraftServer(t, db)
+	ctx0 := context.Background()
+	const uid = int64(4118)
+	if _, err := db.EnsureProfile(ctx0, uid); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		guid    string
+		weightG int64
+		pieces  int64
+	}{
+		{"c1a00000000000000000000000000031", 3400, 3},
+		{"c1a00000000000000000000000000032", 700, 1},
+	} {
+		seedKeepnetFishWeightG(t, db, uid, c.guid, "s.orfe", c.weightG)
+		slots := []craftSlot{{ItemID: "bait_fishForCut", GUID: c.guid, Species: "s.orfe"}}
+		if !craftOKSlots(t, srv, uid, "craft_bait_cut_fish", slots, 1) {
+			t.Fatalf("%dg 的鱼切鱼应成功", c.weightG)
+		}
+	}
+	if got := countOfItem(t, srv, ctx0, uid, "fish_pieces"); got != 4 {
+		t.Fatalf("3400g+700g 两条鱼应共产出 3+1=4 块，实得 %d", got)
 	}
 }
 

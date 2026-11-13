@@ -111,6 +111,40 @@ func slotConsumableForRecipe(recipeID string) (string, int64) {
 	return "", 0
 }
 
+// cutFishPiecesForWeightG 官服切鱼产量按鱼重阶梯：约整公斤每公斤 1 块，
+// 不足 1 公斤也出 1 块。社区实测锚点（2026-11-13 检索）：512g→1 块、
+// 2kg 以上→2 块、3.4kg→3 块、3.8~3.9kg→3 块（见 spec 证据节）。精确门槛
+// 在客户端二进制配方资源里提不出来，按整公斤阶梯实现。
+func cutFishPiecesForWeightG(weightG int64) int64 {
+	if weightG < 1000 {
+		return 1
+	}
+	return weightG / 1000
+}
+
+// rewriteCraftOutputQty 覆盖已构造产物行的数量（数量槽与 row.Qty 同步改）。
+// 仅用于产量不按定义单位量折算的配方：切鱼块按鱼重计件，而 prepareNewItem
+// 会把 fish_pieces 按单位量 30 折算（一刀 30 块，官服 512g 鱼只出 1 块）。
+func rewriteCraftOutputQty(row *store.Item, pieces int64) error {
+	if row == nil || pieces < 1 || pieces == row.Qty {
+		return nil
+	}
+	fields, err := FieldsFromJSON(row.FieldsJSON)
+	if err != nil {
+		return err
+	}
+	if !setItemQty(row.WireClass, fields, uint64(pieces)) {
+		return fmt.Errorf("数量槽写入失败: %s", row.ItemID)
+	}
+	fj, err := FieldsToJSON(fields)
+	if err != nil {
+		return err
+	}
+	row.FieldsJSON = fj
+	row.Qty = pieces
+	return nil
+}
+
 // vendCharge 是贩卖机配方每套材料要按份购买的一种配料（Qty 未乘制作套数）。
 type vendCharge struct {
 	ItemID string
@@ -963,6 +997,11 @@ func hCraft(ctx *Ctx) ([]byte, bool) {
 			keepnetTaken = append(keepnetTaken, entry.EchoGUID)
 			if !containsGUID(touched, entry.EchoGUID) {
 				touched = append(touched, entry.EchoGUID)
+			}
+			// 产量按鱼重计件（官服语义 512g→1 块、3.4kg→3 块），不按定义
+			// 单位量折算——fish_pieces 单位量 30，按单位折会一刀 30 块。
+			if qerr := rewriteCraftOutputQty(producedRow, cutFishPiecesForWeightG(entry.WeightG)); qerr != nil {
+				return fail("鱼块产量改写失败", "err", qerr)
 			}
 		} else {
 			// 碎沸粒：槽 guid 是背包沸粒实例，每套扣 25 粒（不足整体失败回滚；
