@@ -9,14 +9,19 @@ import (
 )
 
 // 无轮手竿和缺少装配数据时保留旧协议基线；带轮竿使用综合物理模型。
+// 标称距离是修正器链的 100% 力度乘法基准：淡水路亚按官服手感锚点校准
+// （满级投距技能的 UL 配置满功率 ≈25m，见
+// specs/changes/cast-distance-calibration/spec.md）；海钓路亚（50-54，
+// 远投场景）暂留旧值 45 待补锚点；其余默认族同样待锚点。
 const (
 	castBaseFloatM   float32 = 7.5461488
 	castBaseLureM    float32 = 7.1598907
 	castBaseDefaultM float32 = castBaseFloatM
 
-	castNominalDefaultM = 60.0
-	castNominalLureM    = 45.0
-	castMinPoweredM     = 8.0
+	castNominalDefaultM    = 60.0
+	castNominalLureM       = 27.5
+	castNominalMarineLureM = 45.0
+	castMinPoweredM        = 8.0
 )
 
 // CastDistanceContext 是抛投模型的一次只读输入。后续加入风力、抛投姿势、
@@ -382,6 +387,10 @@ func castBaseDistanceBits(rigType int64) uint32 {
 
 func castNominalDistanceM(rigType int64) float64 {
 	if rigTypeLureFamily[rigType] {
+		if marineRigType(rigType) {
+			// 海钓路亚 50-54 远投场景，锚点未取到前保留旧标称。
+			return castNominalMarineLureM
+		}
 		return castNominalLureM
 	}
 	return castNominalDefaultM
