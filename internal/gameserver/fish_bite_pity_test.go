@@ -3,12 +3,10 @@ package gameserver
 import (
 	"testing"
 	"time"
-
 )
 
 // 空轮三件套：空因标注、保底杂口（环境放宽）、空轮节奏由 tunable 控制。
 // 食性硬门不放宽是本设计的红线：pityEnv 下 G1 依然剔除非掠食鱼。
-
 
 // 保底杂口：分布散布为 0 的鱼在 pityEnv 下保底 0.15，正常路径仍为 0。
 func TestPityDistributionFloor(t *testing.T) {
