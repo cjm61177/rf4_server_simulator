@@ -1029,7 +1029,18 @@ func (s *Server) rollFishFromDBWithRules(loc, bait string, gearCapKg float64, bo
 			return nil
 		}
 	}
-
+	// 区域固定鱼种名册（fish_zone，后台可编辑，默认无配置=不限制）：
+	// 落点命中独占区只出名单鱼种，命中增益区名单内加权、名单外打折。
+	if zk, zw, hit := s.applyFishZoneRoster(cctx, statLoc, keys, wts, c); hit {
+		keys, wts = zk, zw
+		if len(keys) == 0 {
+			markEmpty("区域名册（独占区无交集）")
+			if c.gateBlocked != nil {
+				*c.gateBlocked = true
+			}
+			return nil
+		}
+	}
 	interests := map[string]float64{}
 	if strict {
 		base := map[string]float64{}
@@ -1169,7 +1180,8 @@ func (s *Server) rollFishFromDBWithRules(loc, bait string, gearCapKg float64, bo
 		}
 		// 咬钩落点审计：世界坐标 + 40m 网格 + 命中的区域名册（后台划区对账用）。
 		// resolveFishZone 与 applyFishZoneRoster 同源（缓存复用），纯查不改判鱼结果。
-		s.log.Info("咬钩落点", "鱼种", key, "x", math.Round(c.x), "z", math.Round(c.z), "网格", fishArea(statLoc, c))
+		s.log.Info("咬钩落点", "鱼种", key, "x", math.Round(c.x), "z", math.Round(c.z),
+			"网格", fishArea(statLoc, c), "区域", zoneHitNote(s.fishZonesFor(cctx, statLoc), c))
 		if s.huntStateEnabled() && c.uid > 0 {
 			s.log.Info("发鱼阶段", "uid", c.uid, "loc", c.loc, "spot", c.spot,
 				"stage", s.fishHuntStageName(huntReady.Mode, huntReady.Stage), "A", roundTo(huntReady.A, 3),
@@ -2361,7 +2373,7 @@ func (s *Server) onRodBiteTimerTicket(uid int64, st *FishState, ticket fishingTi
 	if f == nil {
 		// 空轮也带落点、区域命中与空因：后台对账用，不推玩家提示。
 		rollC := fishRollContext{x: x, z: z, hasPos: hasPos}
-		zoneNote := "无"
+		zoneNote := zoneHitNote(s.fishZonesFor(s.dbCtx(), st.Loc), rollC)
 		reason := "概率/权重全零"
 		if rollCtx.emptyReason != nil && *rollCtx.emptyReason != "" {
 			reason = *rollCtx.emptyReason
