@@ -2353,7 +2353,7 @@ func (s *Server) onRodBiteTimerTicket(uid int64, st *FishState, ticket fishingTi
 			lureLayer: lureLayer, lureAction: lureAction, lureMask: lureMask, lureSpeed: lureSpeed, rigType: rigType,
 			onBoat: boatOn, boatKnown: boatKnown, pityEnv: pity,
 			emptyReason: &reason,
-			now: now, weather: sess.weatherAt(st.Loc, now), happyBite: sess.currentHappyHour().BiteBonus,
+			now:         now, weather: sess.weatherAt(st.Loc, now), happyBite: sess.currentHappyHour().BiteBonus,
 		}
 	}
 	rollCtx := buildRollCtx(false)
