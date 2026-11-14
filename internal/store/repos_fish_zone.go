@@ -18,26 +18,26 @@ import (
 // mode 决定判鱼语义：exclusive 只出名单内鱼种（∩ 地图名册）；
 // boost 名单内乘 boost、名单外乘 keep_others（沿用海图观测语义）。
 type FishZone struct {
-	ID         int64   `json:"id"`
-	Loc        string  `json:"loc"`
-	Name       string  `json:"name"`
-	Kind       string  `json:"kind"`
-	SeaZone    int64   `json:"sea_zone"`
-	SeaZones   []int64 `json:"sea_zones,omitempty"` // 海图区号集合（图上框选）；空=旧单区号 sea_zone
-	GX0        int64   `json:"gx0"`
-	GZ0        int64   `json:"gz0"`
-	GX1        int64   `json:"gx1"`
-	GZ1        int64   `json:"gz1"`
-	Cells      [][2]int64 `json:"cells,omitempty"`
-	Cx         float64 `json:"cx,omitempty"`
-	Cz         float64 `json:"cz,omitempty"`
-	Radius     float64 `json:"radius,omitempty"`
-	Mode       string  `json:"mode"`
-	Boost      float64 `json:"boost"`
-	KeepOthers float64 `json:"keep_others"`
-	Enabled    bool    `json:"enabled"`
-	UpdatedBy  string  `json:"updated_by"`
-	UpdatedTs  float64 `json:"updated_ts"`
+	ID         int64          `json:"id"`
+	Loc        string         `json:"loc"`
+	Name       string         `json:"name"`
+	Kind       string         `json:"kind"`
+	SeaZone    int64          `json:"sea_zone"`
+	SeaZones   []int64        `json:"sea_zones,omitempty"` // 海图区号集合（图上框选）；空=旧单区号 sea_zone
+	GX0        int64          `json:"gx0"`
+	GZ0        int64          `json:"gz0"`
+	GX1        int64          `json:"gx1"`
+	GZ1        int64          `json:"gz1"`
+	Cells      [][2]int64     `json:"cells,omitempty"`
+	Cx         float64        `json:"cx,omitempty"`
+	Cz         float64        `json:"cz,omitempty"`
+	Radius     float64        `json:"radius,omitempty"`
+	Mode       string         `json:"mode"`
+	Boost      float64        `json:"boost"`
+	KeepOthers float64        `json:"keep_others"`
+	Enabled    bool           `json:"enabled"`
+	UpdatedBy  string         `json:"updated_by"`
+	UpdatedTs  float64        `json:"updated_ts"`
 	Fish       []FishZoneFish `json:"fish"`
 }
 
@@ -236,7 +236,6 @@ func (d *DB) SaveFishZone(ctx context.Context, z *FishZone, updatedBy string) er
 	}
 	return tx.Commit()
 }
-
 
 func nullableSeaZone(z FishZone) any {
 	if z.Kind != "sea_zone" {

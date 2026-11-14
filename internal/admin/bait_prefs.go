@@ -29,11 +29,11 @@ type baitPrefRow struct {
 	InStrict bool               `json:"in_strict"` // 严格模式下是否还能咬（规则命中或 tier>0）
 
 	// 鱼口画像（fish_ecology，与判鱼 G 层同表同源）：按类食性权重 + 水层 + 档位体重线。
-	Diet  map[string]float64 `json:"diet,omitempty"`  // worm/fish/boilie/plant/crustacean/lure
-	LureOK bool              `json:"lure_ok"`         // lure≥0.30 过 G1 硬门
-	Layer [3]float64         `json:"layer"`           // min/pref/max（0水面~1水底）
-	QualG int64              `json:"qual_g"`          // 合格档体重（钩容量适配计算用）
-	TrophG int64             `json:"trophy_g"`
+	Diet   map[string]float64 `json:"diet,omitempty"` // worm/fish/boilie/plant/crustacean/lure
+	LureOK bool               `json:"lure_ok"`        // lure≥0.30 过 G1 硬门
+	Layer  [3]float64         `json:"layer"`          // min/pref/max（0水面~1水底）
+	QualG  int64              `json:"qual_g"`         // 合格档体重（钩容量适配计算用）
+	TrophG int64              `json:"trophy_g"`
 
 	// 可编辑覆盖与轮换：source=override 表示该鱼已被后台规则覆盖。
 	Source     string                   `json:"source"` // default | override

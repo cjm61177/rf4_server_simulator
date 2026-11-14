@@ -100,11 +100,11 @@ func TextureFor(level string) (name string, known bool) {
 
 // SeaZoneRect 海图（挪威海）一个声呐区号的世界坐标矩形。
 type SeaZoneRect struct {
-	Zone      int     `json:"zone"`
-	X0        float64 `json:"x0"` // X 起点（左）
-	Z0        float64 `json:"z0"` // Z 大边（上）
-	X1        float64 `json:"x1"` // X 终点（右，不含）
-	Z1        float64 `json:"z1"` // Z 小边（下，不含）
+	Zone int     `json:"zone"`
+	X0   float64 `json:"x0"` // X 起点（左）
+	Z0   float64 `json:"z0"` // Z 大边（上）
+	X1   float64 `json:"x1"` // X 终点（右，不含）
+	Z1   float64 `json:"z1"` // Z 小边（下，不含）
 }
 
 // SeaZoneGrids 解析内嵌声呐网格资产，返回按区号升序的海图区矩形。

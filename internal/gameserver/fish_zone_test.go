@@ -259,9 +259,9 @@ func TestFishZoneCircle(t *testing.T) {
 	if len(zones) != 1 {
 		t.Fatalf("zones=%d", len(zones))
 	}
-	in := fishRollContext{x: 305, z: 205, hasPos: true}           // 距中心 ~7.07m
-	edge := fishRollContext{x: 300 + 15, z: 200, hasPos: true}    // 恰在半径上
-	out := fishRollContext{x: 330, z: 205, hasPos: true}          // 30m 外
+	in := fishRollContext{x: 305, z: 205, hasPos: true}        // 距中心 ~7.07m
+	edge := fishRollContext{x: 300 + 15, z: 200, hasPos: true} // 恰在半径上
+	out := fishRollContext{x: 330, z: 205, hasPos: true}       // 30m 外
 	if !fishZoneContains(zones[0], in) || !fishZoneContains(zones[0], edge) {
 		t.Fatal("圆内/边界应命中")
 	}

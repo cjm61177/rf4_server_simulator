@@ -474,7 +474,8 @@ func (s *Server) handleBiteModeSet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "mode": req.Mode})
 }
 
-func (s *Server) handleSpawnModeGet(w http.ResponseWriter, r *http.Request) {	t, err := s.db.TunableList(r.Context())
+func (s *Server) handleSpawnModeGet(w http.ResponseWriter, r *http.Request) {
+	t, err := s.db.TunableList(r.Context())
 	if err != nil {
 		httpError(w, 500, err.Error())
 		return
